@@ -1,4 +1,4 @@
-//! Level 3 architectural conformance tests for KG Phase 0 and Phase 1.
+//! Level 3 architectural conformance tests for KG Phase 0 through Phase 2.
 //!
 //! These tests verify observable architectural properties rather than private
 //! implementation details. They protect the boundary described by the Phase 0
@@ -382,4 +382,237 @@ fn phase1_index_assigned_id_remains_an_external_indexing_identity() {
     assert_ne!(TypeId::of::<IndexAssignedId>(), TypeId::of::<SourceId>());
     assert_ne!(TypeId::of::<IndexAssignedId>(), TypeId::of::<ReferenceId>());
     assert_ne!(TypeId::of::<IndexAssignedId>(), TypeId::of::<MentionId>());
+}
+
+// -----------------------------------------------------------------------------
+// Phase 2 semantic, relationship, and graph boundaries
+// -----------------------------------------------------------------------------
+
+#[test]
+fn phase2_knowledge_assertion_is_a_first_class_public_semantic_object() {
+    use nizaam_knowledge_graph::assertion::{
+        AssertionContext, AssertionObject, AssertionPolarity, AssertionPredicate, AssertionStatus,
+        KnowledgeAssertion, Qualifier, Qualifiers,
+    };
+    use nizaam_knowledge_graph::identity::{ConceptId, EntityId};
+
+    let mut context = AssertionContext::new();
+    context
+        .insert("source", "quran")
+        .expect("valid assertion context");
+    let qualifier = Qualifier::new("scope", "primary").expect("valid assertion qualifier");
+
+    let assertion = KnowledgeAssertion::new(
+        AssertionObject::Entity(EntityId::new("entity-1").expect("valid entity identity")),
+        AssertionPredicate::new("has-name").expect("valid relationship predicate"),
+        AssertionObject::Concept(ConceptId::new("concept-1").expect("valid concept identity")),
+        context,
+        Qualifiers::from_iter([qualifier]),
+        AssertionStatus::Accepted,
+        AssertionPolarity::Positive,
+    );
+
+    assert!(assertion.validate().is_ok());
+    assert!(!assertion.id().as_str().is_empty());
+}
+
+#[test]
+fn phase2_knowledge_assertion_identity_is_deterministic_and_status_independent() {
+    use nizaam_knowledge_graph::assertion::{
+        AssertionContext, AssertionObject, AssertionPolarity, AssertionPredicate, AssertionStatus,
+        KnowledgeAssertion, Qualifiers,
+    };
+    use nizaam_knowledge_graph::identity::EntityId;
+
+    fn make(status: AssertionStatus) -> KnowledgeAssertion {
+        KnowledgeAssertion::new(
+            AssertionObject::Entity(EntityId::new("entity-1").expect("valid entity identity")),
+            AssertionPredicate::new("has-name").expect("valid relationship predicate"),
+            AssertionObject::Entity(EntityId::new("entity-2").expect("valid entity identity")),
+            AssertionContext::new(),
+            Qualifiers::new(),
+            status,
+            AssertionPolarity::Positive,
+        )
+    }
+
+    let accepted = make(AssertionStatus::Accepted);
+    let provisional = make(AssertionStatus::Provisional);
+
+    assert_eq!(accepted.id(), provisional.id());
+    assert_eq!(accepted, provisional);
+}
+
+#[test]
+fn phase2_assertion_polarity_is_semantically_identity_relevant() {
+    use nizaam_knowledge_graph::assertion::{
+        AssertionContext, AssertionObject, AssertionPolarity, AssertionPredicate, AssertionStatus,
+        KnowledgeAssertion, Qualifiers,
+    };
+    use nizaam_knowledge_graph::identity::EntityId;
+
+    fn make(polarity: AssertionPolarity) -> KnowledgeAssertion {
+        KnowledgeAssertion::new(
+            AssertionObject::Entity(EntityId::new("entity-1").expect("valid entity identity")),
+            AssertionPredicate::new("has-name").expect("valid relationship predicate"),
+            AssertionObject::Entity(EntityId::new("entity-2").expect("valid entity identity")),
+            AssertionContext::new(),
+            Qualifiers::new(),
+            AssertionStatus::Accepted,
+            polarity,
+        )
+    }
+
+    assert_ne!(
+        make(AssertionPolarity::Positive).id(),
+        make(AssertionPolarity::Negative).id()
+    );
+}
+
+#[test]
+fn phase2_typed_assertion_objects_remain_distinct_semantic_types() {
+    use nizaam_knowledge_graph::assertion::AssertionObject;
+    use nizaam_knowledge_graph::identity::{ConceptId, EntityId};
+
+    let entity =
+        AssertionObject::Entity(EntityId::new("shared-value").expect("valid entity identity"));
+    let concept =
+        AssertionObject::Concept(ConceptId::new("shared-value").expect("valid concept identity"));
+
+    assert_ne!(entity, concept);
+}
+
+#[test]
+fn phase2_relationship_definition_exposes_structural_semantics() {
+    use nizaam_knowledge_graph::relationship::{
+        Relationship, RelationshipCharacteristics, RelationshipDirection, RelationshipFamily,
+        RelationshipPredicate,
+    };
+
+    let relationship = Relationship::new(
+        RelationshipPredicate::new("has-name").expect("valid relationship predicate"),
+        RelationshipFamily::new(RelationshipFamily::SEMANTIC).expect("valid relationship family"),
+        RelationshipDirection::SubjectToObject,
+        RelationshipCharacteristics::new(),
+    );
+
+    assert_eq!(
+        relationship.direction(),
+        RelationshipDirection::SubjectToObject
+    );
+    assert_eq!(relationship.family().as_str(), RelationshipFamily::SEMANTIC);
+}
+
+#[test]
+fn phase2_inverse_view_reuses_one_canonical_edge_and_assertion() {
+    use nizaam_knowledge_graph::assertion::{
+        AssertionContext, AssertionObject, AssertionPolarity, AssertionPredicate, AssertionStatus,
+        KnowledgeAssertion, Qualifiers,
+    };
+    use nizaam_knowledge_graph::graph::{Graph, TraversalDirection, traverse};
+    use nizaam_knowledge_graph::identity::EntityId;
+    use nizaam_knowledge_graph::relationship::{
+        Relationship, RelationshipCharacteristics, RelationshipDirection, RelationshipFamily,
+        RelationshipPredicate,
+    };
+
+    let assertion = KnowledgeAssertion::new(
+        AssertionObject::Entity(EntityId::new("entity-1").expect("valid entity identity")),
+        AssertionPredicate::new("has-name").expect("valid relationship predicate"),
+        AssertionObject::Entity(EntityId::new("entity-2").expect("valid entity identity")),
+        AssertionContext::new(),
+        Qualifiers::new(),
+        AssertionStatus::Accepted,
+        AssertionPolarity::Positive,
+    );
+
+    let mut graph = Graph::new();
+    let edge_id = graph
+        .add_assertion(&assertion)
+        .expect("assertion should be added");
+    let edge = graph.edge(&edge_id).expect("edge should exist");
+
+    let relationship = Relationship::new(
+        RelationshipPredicate::new("has-name").expect("valid relationship predicate"),
+        RelationshipFamily::new(RelationshipFamily::SEMANTIC).expect("valid relationship family"),
+        RelationshipDirection::SubjectToObject,
+        RelationshipCharacteristics::new(),
+    )
+    .with_inverse_predicate(RelationshipPredicate::new("name-of").expect("valid inverse predicate"))
+    .expect("valid inverse relationship");
+
+    let forward = traverse(edge, &assertion, &relationship, TraversalDirection::Forward)
+        .expect("forward traversal should succeed");
+    let inverse = traverse(edge, &assertion, &relationship, TraversalDirection::Inverse)
+        .expect("inverse traversal should succeed");
+
+    assert_eq!(forward.assertion_id(), inverse.assertion_id());
+    assert_eq!(forward.edge_id(), inverse.edge_id());
+    assert_eq!(graph.edge_count(), 1);
+    assert_eq!(inverse.predicate().as_str(), "kg.relationship.name-of");
+}
+
+#[test]
+fn phase2_graph_supports_multiple_assertions_between_the_same_nodes() {
+    use nizaam_knowledge_graph::assertion::{
+        AssertionContext, AssertionObject, AssertionPolarity, AssertionPredicate, AssertionStatus,
+        KnowledgeAssertion, Qualifiers,
+    };
+    use nizaam_knowledge_graph::graph::Graph;
+    use nizaam_knowledge_graph::identity::EntityId;
+
+    fn make(predicate: &str) -> KnowledgeAssertion {
+        KnowledgeAssertion::new(
+            AssertionObject::Entity(EntityId::new("entity-1").expect("valid entity identity")),
+            AssertionPredicate::new(predicate).expect("valid relationship predicate"),
+            AssertionObject::Entity(EntityId::new("entity-2").expect("valid entity identity")),
+            AssertionContext::new(),
+            Qualifiers::new(),
+            AssertionStatus::Accepted,
+            AssertionPolarity::Positive,
+        )
+    }
+
+    let first = make("has-name");
+    let second = make("aliases");
+    let mut graph = Graph::new();
+
+    graph
+        .add_assertion(&first)
+        .expect("first assertion should be added");
+    graph
+        .add_assertion(&second)
+        .expect("second assertion should be added");
+
+    assert_eq!(graph.node_count(), 2);
+    assert_eq!(graph.edge_count(), 2);
+}
+
+#[test]
+fn phase2_graph_edge_is_structural_and_references_the_canonical_assertion() {
+    use nizaam_knowledge_graph::assertion::{
+        AssertionContext, AssertionObject, AssertionPolarity, AssertionPredicate, AssertionStatus,
+        KnowledgeAssertion, Qualifiers,
+    };
+    use nizaam_knowledge_graph::graph::Graph;
+    use nizaam_knowledge_graph::identity::EntityId;
+
+    let assertion = KnowledgeAssertion::new(
+        AssertionObject::Entity(EntityId::new("entity-1").expect("valid entity identity")),
+        AssertionPredicate::new("has-name").expect("valid relationship predicate"),
+        AssertionObject::Entity(EntityId::new("entity-2").expect("valid entity identity")),
+        AssertionContext::new(),
+        Qualifiers::new(),
+        AssertionStatus::Accepted,
+        AssertionPolarity::Positive,
+    );
+
+    let mut graph = Graph::new();
+    let edge_id = graph
+        .add_assertion(&assertion)
+        .expect("assertion should be added");
+    let edge = graph.edge(&edge_id).expect("edge should exist");
+
+    assert_eq!(edge.assertion_id(), assertion.id());
+    assert_ne!(edge.id().as_str(), assertion.id().as_str());
 }

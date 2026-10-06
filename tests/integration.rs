@@ -28,7 +28,6 @@ fn phase0_normal_flow_uses_the_complete_core_backed_engine_path() {
         .expect("Phase 0 capability registration should succeed");
 
     engine.mark_ready().expect("engine should become Ready");
-
     engine.serve().expect("engine should become Serving");
 
     let request = universal_request(
@@ -82,7 +81,7 @@ fn request_to_a_non_serving_engine_is_rejected_before_capability_execution() {
 }
 
 #[test]
-fn local_dispatch_does_not_reimplement_logical_target_routing() {
+fn local_dispatch_rejects_a_mismatched_logical_target() {
     let (engine, _, capability_id) = serving_engine("target-engine");
 
     let wrong_target =
@@ -97,19 +96,13 @@ fn local_dispatch_does_not_reimplement_logical_target_routing() {
         "target-engine-mismatch",
     );
 
-    let result = engine
-        .handle_request(&request)
-        .expect("local dispatch should not duplicate Core routing validation");
+    let result = engine.handle_request(&request);
 
-    assert!(matches!(
-        result,
-        CapabilityDispatchResult::Outcome(outcome)
-            if outcome.as_bytes() == b"wrong-target"
-    ));
+    assert!(result.is_err());
 }
 
 #[test]
-fn local_dispatch_does_not_reimplement_instance_routing() {
+fn local_dispatch_rejects_a_mismatched_instance_target() {
     let (engine, _, capability_id) = serving_engine("target-instance");
 
     let wrong_instance = instance_id("another-instance");
@@ -123,15 +116,9 @@ fn local_dispatch_does_not_reimplement_instance_routing() {
         "target-instance-mismatch",
     );
 
-    let result = engine
-        .handle_request(&request)
-        .expect("local dispatch should not duplicate Core routing validation");
+    let result = engine.handle_request(&request);
 
-    assert!(matches!(
-        result,
-        CapabilityDispatchResult::Outcome(outcome)
-            if outcome.as_bytes() == b"wrong-instance"
-    ));
+    assert!(result.is_err());
 }
 
 #[test]

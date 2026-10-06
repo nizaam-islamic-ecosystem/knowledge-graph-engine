@@ -101,9 +101,55 @@ impl From<nizaam_core::capability::RegistryError> for EngineSetupError {
     }
 }
 
+/// Error produced while handling a universal request at the KG boundary.
+///
+/// Core remains authoritative for lifecycle admission. The target mismatch
+/// variants enforce the local-engine routing invariant before capability
+/// dispatch is reached.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RequestHandlingError {
+    Admission(RequestAdmissionError),
+    TargetEngineMismatch {
+        expected: EngineId,
+        actual: EngineId,
+    },
+    TargetInstanceMismatch {
+        expected: EngineInstanceId,
+        actual: EngineInstanceId,
+    },
+}
+
+impl std::fmt::Display for RequestHandlingError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Admission(error) => error.fmt(formatter),
+            Self::TargetEngineMismatch { expected, actual } => write!(
+                formatter,
+                "request target engine {} does not match local engine {}",
+                actual.as_str(),
+                expected.as_str(),
+            ),
+            Self::TargetInstanceMismatch { expected, actual } => write!(
+                formatter,
+                "request target instance {} does not match local instance {}",
+                actual.as_str(),
+                expected.as_str(),
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RequestHandlingError {}
+
+impl From<RequestAdmissionError> for RequestHandlingError {
+    fn from(error: RequestAdmissionError) -> Self {
+        Self::Admission(error)
+    }
+}
+
 /// Result returned by the public KG request boundary.
 pub type UniversalRequestResult =
-    Result<nizaam_core::capability::CapabilityDispatchResult, RequestAdmissionError>;
+    Result<nizaam_core::capability::CapabilityDispatchResult, RequestHandlingError>;
 
 /// Top-level Phase 0 Knowledge Graph engine facade.
 ///
@@ -186,6 +232,13 @@ impl KgEngine {
     pub fn register_engine(&mut self, registry: &EngineRegistry) -> Result<(), EngineSetupError> {
         self.require_registering()?;
 
+        let capability = Capability::definition(self.engine_id());
+        self.registration = self
+            .registration
+            .clone()
+            .with_capability(capability)
+            .map_err(|error| EngineSetupError::Registry(error.into()))?;
+
         self.registration.register(registry)?;
 
         self.engine_registered = true;
@@ -265,11 +318,32 @@ impl KgEngine {
     /// query. Core remains responsible for request admission, capability
     /// resolution, cancellation, deadlines, and handler execution.
     pub fn handle_request(&self, request: &UniversalRequest) -> UniversalRequestResult {
+        self.runtime.admit_request()?;
+
         let envelope = &request.universal_event().envelope;
+        let participants = &envelope.metadata.participants;
+
+        if participants.target != self.engine_id().clone() {
+            return Err(RequestHandlingError::TargetEngineMismatch {
+                expected: self.engine_id().clone(),
+                actual: participants.target.clone(),
+            });
+        }
+
+        if let Some(target_instance) = participants.target_instance.as_ref()
+            && target_instance != self.engine_instance_id()
+        {
+            return Err(RequestHandlingError::TargetInstanceMismatch {
+                expected: self.engine_instance_id().clone(),
+                actual: target_instance.clone(),
+            });
+        }
+
         let context: EngineContext = self.runtime.context(envelope.operation_context.clone());
         let invocation = capability_invocation(request);
 
         self.dispatch_request(&context, &invocation)
+            .map_err(RequestHandlingError::Admission)
     }
 
     /// Begins graceful draining through Core.
@@ -334,6 +408,27 @@ mod tests {
         assert_eq!(engine.runtime().engine_instance_id(), &instance_id());
         assert_eq!(engine.state(), LifecycleState::Created);
         assert!(!engine.is_registered());
+    }
+
+    #[test]
+    fn engine_registration_advertises_phase0_capability() {
+        let mut engine = KgEngine::new(engine_id(), instance_id());
+        engine.start().expect("startup should succeed");
+        engine
+            .begin_registration()
+            .expect("registration state should be entered");
+
+        let registry = EngineRegistry::new();
+        engine
+            .register_engine(&registry)
+            .expect("engine registration should succeed");
+
+        let record = registry
+            .get(engine.engine_instance_id())
+            .expect("registered engine should be present");
+
+        let expected = Capability::definition(engine.engine_id());
+        assert_eq!(record.registration().capabilities(), &[expected]);
     }
 
     #[test]

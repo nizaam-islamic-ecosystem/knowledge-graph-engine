@@ -39,9 +39,12 @@ impl RelationshipPredicate {
     /// "kg.relationship.has-name"
     /// ```
     ///
-    /// The input must be non-empty, must not contain Unicode control
-    /// characters, and must not already contain the canonical relationship
-    /// namespace.
+    /// The input is the local vocabulary name and must be non-empty, must not
+    /// contain Unicode control characters, and must not already contain the
+    /// canonical relationship namespace.
+    ///
+    /// Parsing through [`FromStr`] additionally accepts the canonical
+    /// `kg.relationship.<name>` representation emitted by [`Display`].
     pub fn new(name: impl Into<String>) -> Result<Self, RelationshipPredicateValidationError> {
         let name = name.into();
 
@@ -107,7 +110,9 @@ impl FromStr for RelationshipPredicate {
     type Err = RelationshipPredicateValidationError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::new(value)
+        let local_name = value.strip_prefix(RELATIONSHIP_NAMESPACE).unwrap_or(value);
+
+        Self::new(local_name)
     }
 }
 
@@ -115,7 +120,7 @@ impl TryFrom<String> for RelationshipPredicate {
     type Error = RelationshipPredicateValidationError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::new(value)
+        value.parse()
     }
 }
 
@@ -123,7 +128,7 @@ impl TryFrom<&str> for RelationshipPredicate {
     type Error = RelationshipPredicateValidationError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        Self::new(value)
+        value.parse()
     }
 }
 
@@ -244,28 +249,45 @@ mod tests {
     }
 
     #[test]
-    fn from_str_uses_the_same_validation_rules() {
-        let predicate = "has-name"
+    fn from_str_accepts_local_and_canonical_representations() {
+        let local = "has-name"
             .parse::<RelationshipPredicate>()
-            .expect("valid predicate");
+            .expect("valid local predicate");
 
-        assert_eq!(predicate.as_str(), "kg.relationship.has-name");
+        let canonical = "kg.relationship.has-name"
+            .parse::<RelationshipPredicate>()
+            .expect("valid canonical predicate");
+
+        assert_eq!(local, canonical);
+        assert_eq!(canonical.as_str(), "kg.relationship.has-name");
+    }
+
+    #[test]
+    fn from_str_reuses_the_same_structural_validation_rules() {
+        assert_eq!(
+            "kg.relationship.".parse::<RelationshipPredicate>(),
+            Err(RelationshipPredicateValidationError::EmptyName)
+        );
+
+        let error = "kg.relationship.has-
+-name"
+            .parse::<RelationshipPredicate>()
+            .expect_err("control character should be rejected");
 
         assert_eq!(
-            "kg.relationship.has-name".parse::<RelationshipPredicate>(),
-            Err(RelationshipPredicateValidationError::AlreadyNamespaced)
+            error,
+            RelationshipPredicateValidationError::ControlCharacter { index: 4 }
         );
     }
 
     #[test]
-    fn try_from_conversions_use_the_same_constructor() {
-        let from_string =
-            RelationshipPredicate::try_from("has-name".to_owned()).expect("valid predicate");
+    fn try_from_conversions_accept_local_and_canonical_representations() {
+        let from_string = RelationshipPredicate::try_from("kg.relationship.has-name".to_owned())
+            .expect("valid canonical predicate");
 
-        let from_str = RelationshipPredicate::try_from("aliases").expect("valid predicate");
+        let from_str = RelationshipPredicate::try_from("aliases").expect("valid local predicate");
 
         assert_eq!(from_string.as_str(), "kg.relationship.has-name");
-
         assert_eq!(from_str.as_str(), "kg.relationship.aliases");
     }
 

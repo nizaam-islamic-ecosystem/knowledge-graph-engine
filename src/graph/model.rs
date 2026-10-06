@@ -37,6 +37,16 @@ pub enum GraphError {
     /// The supplied edge identity is already present in the graph.
     EdgeAlreadyExists { edge_id: GraphEdgeId },
 
+    /// A structural node with the same semantic reference is already registered
+    /// under a different graph-node identity.
+    NodeReferenceAlreadyRegistered {
+        /// Semantic reference already associated with a graph node.
+        reference: AssertionObject,
+
+        /// Existing graph-node identity for the reference.
+        node_id: GraphNodeId,
+    },
+
     /// Edge construction failed its assertion/node structural checks.
     InvalidEdge(GraphEdgeError),
 }
@@ -60,6 +70,10 @@ impl fmt::Display for GraphError {
             Self::EdgeAlreadyExists { edge_id } => {
                 write!(formatter, "graph edge already exists: {edge_id}")
             }
+            Self::NodeReferenceAlreadyRegistered { reference, node_id } => write!(
+                formatter,
+                "graph node reference is already registered under node {node_id}: {reference:?}"
+            ),
             Self::InvalidEdge(error) => error.fmt(formatter),
         }
     }
@@ -141,8 +155,67 @@ impl Graph {
         Ok(edge_id)
     }
 
+    /// Registers an already constructed structural graph node without replacing
+    /// the node identity.
+    ///
+    /// This is the registration path for callers that construct `GraphNode`
+    /// values themselves and later build a `GraphEdge` from those exact nodes.
+    ///
+    /// Registering the same node value again is idempotent. Registering a
+    /// different node identity for an already registered semantic reference is
+    /// rejected so one semantic reference continues to map to one structural
+    /// graph node.
+    pub fn register_node(&mut self, node: GraphNode) -> Result<(), GraphError> {
+        let node_id = node.id().clone();
+        let reference = node.reference().clone();
+
+        if let Some(existing) = self.node_ids_by_reference.get(&reference) {
+            if existing == &node_id {
+                return Ok(());
+            }
+
+            return Err(GraphError::NodeReferenceAlreadyRegistered {
+                reference,
+                node_id: existing.clone(),
+            });
+        }
+
+        if self.nodes.contains_key(&node_id) {
+            return Ok(());
+        }
+
+        self.nodes.insert(node_id.clone(), node);
+        self.node_ids_by_reference
+            .insert(reference, node_id.clone());
+        self.outgoing.entry(node_id.clone()).or_default();
+        self.incoming.entry(node_id).or_default();
+
+        Ok(())
+    }
+
     /// Adds an already constructed structural graph edge.
+    ///
+    /// The edge must reference nodes that have already been registered with
+    /// [`Graph::register_node`]. This preserves the edge's exact structural node
+    /// identities rather than silently replacing them.
     pub fn add_edge(&mut self, edge: GraphEdge) -> Result<(), GraphError> {
+        self.insert_edge(edge)
+    }
+
+    /// Registers the supplied source/target nodes and then adds the already
+    /// constructed edge.
+    ///
+    /// This is the convenience path for callers that construct a
+    /// `GraphEdge` from public `GraphNode` values before handing the complete
+    /// structure to the graph.
+    pub fn add_edge_with_nodes(
+        &mut self,
+        source: GraphNode,
+        target: GraphNode,
+        edge: GraphEdge,
+    ) -> Result<(), GraphError> {
+        self.register_node(source)?;
+        self.register_node(target)?;
         self.insert_edge(edge)
     }
 
@@ -376,7 +449,34 @@ mod tests {
     }
 
     #[test]
-    fn manually_added_edge_requires_registered_nodes() {
+    fn manually_constructed_nodes_can_be_registered_and_used_by_add_edge() {
+        let mut graph = Graph::new();
+        let assertion = assertion("has-name", "entity-2");
+        let source = GraphNode::new(assertion.subject().clone());
+        let target = GraphNode::new(assertion.object().clone());
+        let edge = GraphEdge::new(&assertion, &source, &target)
+            .expect("edge should be structurally valid");
+
+        graph
+            .register_node(source.clone())
+            .expect("source node should register");
+        graph
+            .register_node(target.clone())
+            .expect("target node should register");
+
+        graph
+            .add_edge(edge.clone())
+            .expect("registered nodes should allow the constructed edge");
+
+        assert!(graph.node(source.id()).is_some());
+        assert!(graph.node(target.id()).is_some());
+        assert!(graph.edge(edge.id()).is_some());
+        assert_eq!(graph.node_count(), 2);
+        assert_eq!(graph.edge_count(), 1);
+    }
+
+    #[test]
+    fn add_edge_still_rejects_an_edge_with_unregistered_nodes() {
         let mut graph = Graph::new();
         let assertion = assertion("has-name", "entity-2");
         let source = GraphNode::new(assertion.subject().clone());
@@ -386,7 +486,7 @@ mod tests {
 
         let error = graph
             .add_edge(edge)
-            .expect_err("unregistered nodes must be rejected");
+            .expect_err("unregistered nodes must still be rejected");
 
         match error {
             GraphError::SourceNodeNotFound { node_id } => {
@@ -394,5 +494,23 @@ mod tests {
             }
             other => panic!("unexpected graph error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn add_edge_with_nodes_registers_the_supplied_nodes() {
+        let mut graph = Graph::new();
+        let assertion = assertion("has-name", "entity-2");
+        let source = GraphNode::new(assertion.subject().clone());
+        let target = GraphNode::new(assertion.object().clone());
+        let edge = GraphEdge::new(&assertion, &source, &target)
+            .expect("edge should be structurally valid");
+
+        graph
+            .add_edge_with_nodes(source.clone(), target.clone(), edge.clone())
+            .expect("complete constructed graph structure should be accepted");
+
+        assert_eq!(graph.node(source.id()).unwrap().id(), source.id());
+        assert_eq!(graph.node(target.id()).unwrap().id(), target.id());
+        assert_eq!(graph.edge(edge.id()).unwrap().id(), edge.id());
     }
 }

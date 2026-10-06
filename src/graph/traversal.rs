@@ -48,6 +48,16 @@ pub enum TraversalError {
     /// The graph edge does not reference the supplied canonical assertion.
     AssertionMismatch,
 
+    /// The relationship predicate does not match the predicate of the canonical
+    /// assertion referenced by the graph edge.
+    PredicateMismatch {
+        /// Predicate carried by the canonical assertion.
+        assertion_predicate: RelationshipPredicate,
+
+        /// Predicate supplied by the relationship definition.
+        relationship_predicate: RelationshipPredicate,
+    },
+
     /// A reverse traversal was requested but the relationship provides neither
     /// an explicit inverse predicate nor symmetric semantics.
     ReverseTraversalUnavailable,
@@ -58,6 +68,13 @@ impl fmt::Display for TraversalError {
         match self {
             Self::AssertionMismatch => formatter
                 .write_str("graph edge does not reference the supplied canonical assertion"),
+            Self::PredicateMismatch {
+                assertion_predicate,
+                relationship_predicate,
+            } => write!(
+                formatter,
+                "relationship predicate does not match assertion predicate: assertion={assertion_predicate}, relationship={relationship_predicate}"
+            ),
             Self::ReverseTraversalUnavailable => {
                 formatter.write_str("relationship does not provide reverse traversal semantics")
             }
@@ -140,6 +157,13 @@ pub fn traverse(
 ) -> Result<TraversalStep, TraversalError> {
     if edge.assertion_id() != assertion.id() {
         return Err(TraversalError::AssertionMismatch);
+    }
+
+    if relationship.predicate() != assertion.predicate() {
+        return Err(TraversalError::PredicateMismatch {
+            assertion_predicate: assertion.predicate().clone(),
+            relationship_predicate: relationship.predicate().clone(),
+        });
     }
 
     let (canonical_source, canonical_target) = match relationship.direction() {
@@ -358,6 +382,31 @@ mod tests {
         .expect_err("edge/assertion mismatch must be rejected");
 
         assert_eq!(error, TraversalError::AssertionMismatch);
+    }
+
+    #[test]
+    fn traversal_rejects_a_relationship_with_a_different_predicate() {
+        let assertion = assertion("has-name");
+        let edge = edge_for(&assertion);
+        let relationship = relationship("aliases", RelationshipDirection::SubjectToObject);
+
+        let error = traverse(
+            &edge,
+            &assertion,
+            &relationship,
+            TraversalDirection::Forward,
+        )
+        .expect_err("relationship/assertion predicate mismatch must be rejected");
+
+        assert_eq!(
+            error,
+            TraversalError::PredicateMismatch {
+                assertion_predicate: RelationshipPredicate::new("has-name")
+                    .expect("valid predicate"),
+                relationship_predicate: RelationshipPredicate::new("aliases")
+                    .expect("valid predicate"),
+            }
+        );
     }
 
     #[test]

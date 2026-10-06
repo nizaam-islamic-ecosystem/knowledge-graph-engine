@@ -1,6 +1,8 @@
 [package]
-name = "knowledge-graph"
+name = "nizaam-knowledge-graph"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+nizaam-core = "1.0.0"
+nizaam-indexing = "1.0.0"

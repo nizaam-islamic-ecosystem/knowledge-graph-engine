@@ -1,8 +1,9 @@
-//! Level 3 architectural conformance tests for KG Phase 0.
+//! Level 3 architectural conformance tests for KG Phase 0 and Phase 1.
 //!
 //! These tests verify observable architectural properties rather than private
 //! implementation details. They protect the boundary described by the Phase 0
-//! scope: KG adapts to Core and does not recreate Core.
+//! scope: KG adapts to Core and does not recreate Core, while Phase 1 keeps
+//! the KG semantic foundation within its defined identity/object boundaries.
 
 mod common;
 
@@ -266,4 +267,119 @@ fn phase0_engine_and_instance_identities_are_stable_across_lifecycle() {
         engine.engine_instance_id(),
         &instance_id("stable-identities")
     );
+}
+
+#[test]
+fn phase1_kg_identity_layer_exposes_all_required_strong_types() {
+    use nizaam_knowledge_graph::identity::{
+        ConceptId, EntityId, KnowledgeAssertionId, LexicalFormId, MentionId, ReferenceId, SourceId,
+    };
+    use std::any::TypeId;
+
+    let _: EntityId = EntityId::generate();
+    let _: ConceptId = ConceptId::generate();
+    let _: SourceId = SourceId::generate();
+    let _: ReferenceId = ReferenceId::generate();
+    let _: LexicalFormId = LexicalFormId::generate();
+    let _: MentionId = MentionId::generate();
+    let _: KnowledgeAssertionId = KnowledgeAssertionId::generate();
+
+    let ids = [
+        TypeId::of::<EntityId>(),
+        TypeId::of::<ConceptId>(),
+        TypeId::of::<SourceId>(),
+        TypeId::of::<ReferenceId>(),
+        TypeId::of::<LexicalFormId>(),
+        TypeId::of::<MentionId>(),
+        TypeId::of::<KnowledgeAssertionId>(),
+    ];
+
+    for (index, left) in ids.iter().enumerate() {
+        for right in ids.iter().skip(index + 1) {
+            assert_ne!(left, right);
+        }
+    }
+}
+
+#[test]
+fn phase1_entity_concept_source_reference_and_mention_are_distinct_objects() {
+    use nizaam_knowledge_graph::{Concept, Entity, Mention, Reference, Source};
+    use std::any::TypeId;
+
+    let object_types = [
+        TypeId::of::<Entity>(),
+        TypeId::of::<Concept>(),
+        TypeId::of::<Source>(),
+        TypeId::of::<Reference>(),
+        TypeId::of::<Mention>(),
+    ];
+
+    for (index, left) in object_types.iter().enumerate() {
+        for right in object_types.iter().skip(index + 1) {
+            assert_ne!(left, right);
+        }
+    }
+}
+
+#[test]
+fn phase1_names_and_aliases_remain_entity_representation_data() {
+    use nizaam_knowledge_graph::{
+        entity::{Alias, Entity, Name},
+        identity::EntityId,
+    };
+
+    let entity = Entity::new(
+        EntityId::generate(),
+        Name::new("الله", "ar"),
+        vec![Alias::new("Allah", "en"), Alias::new("اللہ", "ur")],
+    );
+
+    assert_eq!(entity.name().value(), "الله");
+    assert_eq!(entity.name().language(), "ar");
+    assert_eq!(entity.aliases()[0].value(), "Allah");
+    assert_eq!(entity.aliases()[0].language(), "en");
+    assert_eq!(entity.aliases()[1].value(), "اللہ");
+    assert_eq!(entity.aliases()[1].language(), "ur");
+}
+
+#[test]
+fn phase1_concept_and_lexical_identity_remain_separate_boundaries() {
+    use nizaam_knowledge_graph::identity::{ConceptId, LexicalFormId};
+    use std::any::TypeId;
+
+    let concept_id = ConceptId::generate();
+    let lexical_id = LexicalFormId::generate();
+
+    assert!(!concept_id.as_str().is_empty());
+    assert!(!lexical_id.as_str().is_empty());
+    assert_ne!(TypeId::of::<ConceptId>(), TypeId::of::<LexicalFormId>());
+}
+
+#[test]
+fn phase1_source_and_reference_remain_separate_generic_boundaries() {
+    use nizaam_knowledge_graph::{
+        identity::{ReferenceId, SourceId},
+        source::{Reference, Source},
+    };
+
+    let source = Source::new(SourceId::generate(), "Example source");
+    let reference = Reference::new(ReferenceId::generate(), "opaque-reference-value");
+
+    assert_eq!(source.label(), "Example source");
+    assert_eq!(reference.value(), "opaque-reference-value");
+}
+
+#[test]
+fn phase1_index_assigned_id_remains_an_external_indexing_identity() {
+    use nizaam_indexing::identity::IndexAssignedId;
+    use nizaam_knowledge_graph::identity::{ConceptId, EntityId, MentionId, ReferenceId, SourceId};
+    use std::any::TypeId;
+
+    // The KG consumes Indexing's assigned-object identity concept; it does
+    // not replace that identity with one of its semantic identity types.
+    assert_ne!(TypeId::of::<IndexAssignedId>(), TypeId::of::<EntityId>());
+    assert_ne!(TypeId::of::<IndexAssignedId>(), TypeId::of::<ConceptId>());
+    assert_ne!(TypeId::of::<IndexAssignedId>(), TypeId::of::<SourceId>());
+    assert_ne!(TypeId::of::<IndexAssignedId>(), TypeId::of::<ReferenceId>());
+    assert_ne!(TypeId::of::<IndexAssignedId>(), TypeId::of::<MentionId>());
 }

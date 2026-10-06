@@ -1930,7 +1930,7 @@ The first question must be solved without prematurely implementing the second.
 
 #### Status
 
-**In Progress**
+**Completed**
 
 #### Goal
 
@@ -2692,6 +2692,89 @@ The test suite must verify identity behavior and semantic separation rather than
 
 ---
 
+#### Phase 1 Implementation Record
+
+The Phase 1 implementation was completed against the approved scope. The following
+items are now present in the implementation:
+
+- [x] Core-backed semantic identity foundation is implemented for the seven Phase 1 IDs:
+  `EntityId`, `ConceptId`, `SourceId`, `ReferenceId`, `LexicalFormId`, `MentionId`, and
+  `KnowledgeAssertionId`.
+- [x] KG identity types reuse the Core `identity!` mechanism; no local SHA-256, hash,
+  UUID, ULID, or generic identity generator was introduced.
+- [x] `src/identity/mod.rs` wires and re-exports the seven Phase 1 identity types.
+- [x] `src/identity/object.rs` remains inspect-only and does not introduce an automatic
+  `ObjectId` in Phase 1.
+- [x] `Entity` is implemented as a minimal identity-bearing representation with a
+  primary `Name` and zero or more aliases.
+- [x] `Name` preserves a value plus opaque language metadata without introducing a
+  linguistic subsystem.
+- [x] `Alias` remains part of the Entity representation boundary and does not receive
+  a separate `AliasId`.
+- [x] `Mention` is implemented as a distinct occurrence-level object with `MentionId`
+  and preserved representation text.
+- [x] `Entity` Level 1 and Level 2 tests cover identity/name/alias preservation,
+  multilingual representation, alias semantics, and Entity/Mention distinction.
+- [x] `Concept` is implemented as a minimal identity-bearing object with an opaque
+  semantic representation.
+- [x] Concept relationship and type scaffolds remain deferred and contain no
+  Phase 1 relationship/ontology logic.
+- [x] `Source` is implemented as a minimal identity-bearing object with opaque
+  identifying metadata.
+- [x] `Reference` is implemented with `ReferenceId` plus an opaque reference value.
+- [x] Collection, document, and passage source scaffolds remain deferred without
+  introducing lookup, parsing, or persistence behavior.
+- [x] The lexical module establishes the `LexicalFormId` boundary only; the concrete
+  lexical object, lemma, root, sense, and mapping behavior remain deferred.
+- [x] The assertion module establishes `KnowledgeAssertionId` only; no
+  `KnowledgeAssertion` structure or assertion-component semantics were introduced.
+- [x] Phase 1 semantic module roots expose only functionality actually implemented in
+  the current phase.
+- [x] The Core integration boundary from Phase 0 remains intact and Core continues to
+  own runtime, lifecycle, request admission, context, capability dispatch, registration,
+  Control Plane, and universal contract infrastructure.
+- [x] The Indexing integration boundary remains non-owning: `IndexAssignedId` is treated
+  as an external Indexing-owned identity and no duplicate KG assignment system is added.
+- [x] The test suite contains repository-level Phase 1 tests for identity, entity,
+  concept, source, lexical, assertion, and cross-module conformance boundaries.
+- [x] The existing Phase 0 conformance coverage was retained while Phase 1 conformance
+  coverage was added.
+- [x] Comment-only Phase 1 files do not receive artificial executable tests.
+
+#### Phase 1 Decisions Recorded During Implementation
+
+- **[x] Core identity ownership is preserved.** The KG defines the semantic identity
+  types, while Core remains the sole owner of identity-generation behavior through
+  `identity!`.
+- **[x] `Entity`, `Concept`, and `Source` use intentionally minimal representations.**
+  No later ontology, relationship, provenance, evidence, or resolution semantics were
+  pulled forward simply because the scaffold already existed.
+- **[x] `Name` language metadata remains opaque.** The KG preserves language markers
+  without becoming responsible for Arabic or other linguistic analysis.
+- **[x] Aliases are representation data, not independent semantic identities.**
+  No `AliasId` was introduced.
+- **[x] `Reference` uses the selected `ReferenceId + opaque reference value` model.**
+  Reference resolution and source/document/passage lookup remain deferred.
+- **[x] Lexical Phase 1 remains identity-only.** `LexicalFormId` is established, while
+  concrete lexical semantics remain deferred so the KG does not duplicate the Arabic
+  Engine.
+- **[x] Assertion Phase 1 remains identity-only.** `KnowledgeAssertionId` exists, but
+  `KnowledgeAssertion` is deferred to Phase 2.
+- **[x] Core-backed integration is preserved.** Phase 1 does not create replacement
+  runtime, lifecycle, registry, capability, Control Plane, or universal request systems.
+- **[x] Indexing remains the owner of `IndexAssignedId`.** KG does not generate or
+  redefine that identity.
+- **[x] Module implementation files were named to avoid Rust module-inception warnings.**
+  The Entity, Concept, and Source implementation models use `model.rs` under their
+  corresponding module roots rather than `entity/entity.rs`, `concept/concept.rs`, or
+  `source/source.rs`.
+- **[x] Deferred/comment-only files remain deliberately minimal.** Their existence is
+  preserved as scaffold structure without creating placeholder domain logic.
+- **[x] Testing remains behavior-driven.** Executable tests were added where Phase 1
+  behavior exists; lexical and assertion repository test files remain comment-only
+  because those modules have no Phase 1 semantic behavior beyond their identity
+  boundaries.
+
 #### Completion Criteria
 
 Phase 1 is complete when:
@@ -2741,12 +2824,12 @@ The implementation must demonstrate that:
 
 
 #### Verification Checklist
-- [ ] The phase goal and approved scope are satisfied.
-- [ ] The implementation and module boundaries match the approved architecture.
-- [ ] Positive and negative behavior is covered by appropriate tests.
-- [ ] Previously verified phases remain intact and regression-safe.
-- [ ] Required verification and quality checks pass before completion is declared.
-- [ ] No future-phase functionality was implemented prematurely.
+- [x] The phase goal and approved scope are satisfied.
+- [x] The implementation and module boundaries match the approved architecture.
+- [x] Positive and negative behavior is covered by appropriate tests.
+- [x] Previously verified phases remain intact and regression-safe.
+- [x] Required verification and quality checks pass before completion is declared.
+- [x] No future-phase functionality was implemented prematurely.
 
 #### Final Architectural Principle
 
@@ -2786,7 +2869,7 @@ Phase 1 deliberately stops at this boundary.
 
 #### Status
 
-**Planned --- development decisions selected provisionally**
+**In Progress**
 
 > These are the current development decisions for Phase 2. They are not
 > irreversible architectural commitments. They may be revisited if
@@ -16597,8 +16680,8 @@ Initial decisions   → recorded
 Implementation      → in progress (Phase 1)
 
 Phase 0             → Completed
-Phase 1             → In Progress
-Phase 2             → Planned
+Phase 1             → Completed
+Phase 2             → In progress
 Phase 3             → Planned
 Phase 4             → Planned
 Phase 5             → Planned

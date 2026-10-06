@@ -1,8 +1,8 @@
-//! Level 3 public-boundary tests for the Phase 1 KG identity layer.
+//! Level 3 public-boundary tests for the KG identity layer.
 //!
-//! These tests exercise the public identity API exposed by the Knowledge Graph
-//! crate. Identity generation remains owned by Nizaam Core through the
-//! `identity!` mechanism; the KG only owns the semantic identity types.
+//! Phase 1 established the strongly typed semantic identities. Phase 2 adds
+//! the deterministic construction path for `KnowledgeAssertionId` while
+//! preserving Core ownership of the underlying identity implementation.
 
 use nizaam_knowledge_graph::identity::{
     ConceptId, EntityId, KnowledgeAssertionId, LexicalFormId, MentionId, ReferenceId, SourceId,
@@ -10,7 +10,7 @@ use nizaam_knowledge_graph::identity::{
 use std::any::TypeId;
 
 #[test]
-fn all_phase1_identity_types_generate_non_empty_values() {
+fn all_kg_identity_types_generate_non_empty_values() {
     assert!(!EntityId::generate().as_str().is_empty());
     assert!(!ConceptId::generate().as_str().is_empty());
     assert!(!SourceId::generate().as_str().is_empty());
@@ -21,7 +21,7 @@ fn all_phase1_identity_types_generate_non_empty_values() {
 }
 
 #[test]
-fn phase1_identity_generation_produces_distinct_values_per_type() {
+fn generated_identity_values_remain_distinct_within_each_type() {
     assert_ne!(EntityId::generate(), EntityId::generate());
     assert_ne!(ConceptId::generate(), ConceptId::generate());
     assert_ne!(SourceId::generate(), SourceId::generate());
@@ -35,7 +35,7 @@ fn phase1_identity_generation_produces_distinct_values_per_type() {
 }
 
 #[test]
-fn phase1_identity_types_are_strongly_distinct() {
+fn identity_types_are_strongly_distinct() {
     let types = [
         TypeId::of::<EntityId>(),
         TypeId::of::<ConceptId>(),
@@ -54,7 +54,7 @@ fn phase1_identity_types_are_strongly_distinct() {
 }
 
 #[test]
-fn phase1_identity_explicit_values_preserve_core_value_semantics() {
+fn explicit_core_identity_values_preserve_value_semantics() {
     let first = EntityId::new("entity-1").expect("valid identity");
     let second = EntityId::new("entity-1").expect("valid identity");
 
@@ -63,10 +63,38 @@ fn phase1_identity_explicit_values_preserve_core_value_semantics() {
 }
 
 #[test]
-fn phase1_identity_types_do_not_require_shared_textual_equality() {
+fn different_identity_types_do_not_collapse_shared_text_values() {
     let entity = EntityId::new("shared-value").expect("valid identity");
     let concept = ConceptId::new("shared-value").expect("valid identity");
 
     assert_eq!(entity.as_str(), concept.as_str());
     assert_ne!(TypeId::of::<EntityId>(), TypeId::of::<ConceptId>());
+}
+
+#[test]
+fn knowledge_assertion_identity_is_deterministic_from_canonical_input() {
+    let canonical = "subject:9:entity:1|predicate:25:kg.relationship.has-name|object:10:entity:2|context:0:|qualifiers:0:|polarity:8:positive|";
+
+    let first = KnowledgeAssertionId::from_canonical(canonical)
+        .expect("valid canonical assertion identity");
+    let second = KnowledgeAssertionId::from_canonical(canonical)
+        .expect("same canonical assertion identity should be valid");
+
+    assert_eq!(first, second);
+    assert_eq!(first.as_str(), canonical);
+}
+
+#[test]
+fn different_canonical_assertion_inputs_produce_distinct_identities() {
+    let first = KnowledgeAssertionId::from_canonical(
+        "subject:9:entity:1|predicate:25:kg.relationship.has-name|object:10:entity:2|context:0:|qualifiers:0:|polarity:8:positive|",
+    )
+    .expect("valid canonical assertion identity");
+
+    let second = KnowledgeAssertionId::from_canonical(
+        "subject:9:entity:1|predicate:25:kg.relationship.has-name|object:10:entity:3|context:0:|qualifiers:0:|polarity:8:positive|",
+    )
+    .expect("valid canonical assertion identity");
+
+    assert_ne!(first, second);
 }

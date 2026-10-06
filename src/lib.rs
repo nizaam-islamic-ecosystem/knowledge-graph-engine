@@ -8,10 +8,11 @@
 //!
 //! The module declarations below intentionally include both implemented and
 //! future-phase modules. Declaring a module does not mean its future behavior is
-//! implemented or part of the current Phase 1 semantic contract.
+//! implemented or part of the current Phase 2 semantic contract.
 //!
 //! The public `use`/re-export surface below exposes the currently established
-//! Phase 0 and Phase 1 contracts without recreating Core or Indexing types.
+//! Phase 0, Phase 1, and Phase 2 contracts without recreating Core or Indexing
+//! types.
 //!
 //! Core remains authoritative for universal runtime, lifecycle, request
 //! admission, execution context, cancellation, deadlines, capability dispatch,
@@ -85,11 +86,39 @@ pub use source::{Reference, Source};
 // -----------------------------------------------------------------------------
 
 // `LexicalFormId` is re-exported above from the canonical identity module.
-// There is intentionally no concrete `LexicalForm` root export in Phase 1.
+// There is intentionally no concrete `LexicalForm` root export in the current
+// implementation boundary.
 
 // -----------------------------------------------------------------------------
-// Phase 1 assertion public surface
+// Phase 2 assertion public surface
 // -----------------------------------------------------------------------------
 
-// `KnowledgeAssertionId` is re-exported above from the canonical identity
-// module. The semantic `KnowledgeAssertion` model remains deferred.
+pub use assertion::{
+    AssertionContext, AssertionContextError, AssertionObject, AssertionPolarity,
+    AssertionPredicate, AssertionStatus, KnowledgeAssertion, KnowledgeAssertionValidationError,
+    Qualifier, QualifierError, Qualifiers,
+};
+
+// `KnowledgeAssertionId` remains re-exported above from the canonical identity
+// module. The assertion module also exposes it through `assertion::...`.
+
+// -----------------------------------------------------------------------------
+// Phase 2 relationship public surface
+// -----------------------------------------------------------------------------
+
+pub use relationship::{
+    CompositionRule, InverseRelationship, InverseRelationshipError, RELATIONSHIP_NAMESPACE,
+    Relationship, RelationshipCharacteristic, RelationshipCharacteristicError,
+    RelationshipCharacteristics, RelationshipDirection, RelationshipError, RelationshipFamily,
+    RelationshipFamilyError, RelationshipPredicate, RelationshipPredicateValidationError,
+    RelationshipVocabulary, RelationshipVocabularyError,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 2 graph public surface
+// -----------------------------------------------------------------------------
+
+pub use graph::{
+    Graph, GraphEdge, GraphEdgeError, GraphEdgeId, GraphError, GraphNode, GraphNodeId,
+    TraversalDirection, TraversalError, TraversalStep, traverse,
+};

@@ -1159,7 +1159,7 @@ implementation.
 
 #### Status
 
-**Status:** Planned
+**Status:** Completed
 
 Phase 0 establishes the Knowledge Graph (KG) Engine as a valid Nizaam infrastructure engine and establishes the Rust library boundary through which all later KG phases will be implemented.
 
@@ -1759,6 +1759,84 @@ The Python scope is separate. Rust Phase 9 is intentionally deferred until the P
 16. **A scaffold is not an implementation.**
 17. **Do not claim future functionality merely because a module exists.**
 
+#### Phase 0 Implementation Record
+
+Phase 0 has been implemented as the Core-backed KG Engine foundation. The following
+items are now present in the implementation:
+
+- [x] Rust library/package boundary established in `src/lib.rs`.
+- [x] `nizaam-core` and `nizaam-indexing` are declared as crate dependencies; no
+  indexing-specific runtime behavior is introduced because that is outside the
+  Phase 0 scope.
+- [x] `KgEngine` facade composes the Core-backed runtime, Control Plane
+  registration boundary, and minimal capability boundary.
+- [x] Core `EngineId` and `EngineInstanceId` remain distinct and are preserved
+  across the engine lifecycle.
+- [x] Core `EngineRuntime` is used as the authoritative lifecycle and admission
+  mechanism; no second KG lifecycle state machine was introduced.
+- [x] The Phase 0 lifecycle path is implemented through Core:
+  `Created → Starting → Configuring → Dependencies → Capabilities →
+  Registering → Ready → Serving → Draining → Stopped`.
+- [x] Engine registration is performed through Core `EngineRegistration` and
+  `EngineRegistry`, with no competing KG-local engine registry.
+- [x] Phase 0 capability ownership and advertisement use Core's capability
+  definition/registration model.
+- [x] The minimal Option A capability contract is implemented as an opaque
+  integration probe rather than a knowledge/query capability.
+- [x] Universal requests are accepted through Core's `UniversalRequest` contract
+  and adapted into Core `CapabilityInvocation` values.
+- [x] Request handling passes through Core lifecycle admission before capability
+  dispatch.
+- [x] Logical-engine and concrete-instance target mismatches are rejected at the
+  KG engine boundary before capability execution.
+- [x] Capability lookup and dispatch use Core's canonical capability dispatcher.
+- [x] `OperationContext` is preserved from the Universal Request and converted
+  into Core `EngineContext` without introducing KG-local context types.
+- [x] Capability results remain Core-owned `CapabilityDispatchResult` values;
+  no parallel KG universal result envelope was introduced.
+- [x] Graceful drain and shutdown delegate to Core and terminate in Core's
+  `Stopped` state.
+- [x] KG-specific setup/request errors are limited to actual Phase 0 boundary
+  concerns and compose with Core error types.
+- [x] A KG-local planner extension point exists as an architectural seam only;
+  no fake planner or query implementation was introduced.
+- [x] Deferred integration surfaces (`grpc`, Arabic, indexing-specific adapter
+  files) remain scaffolding with no premature Phase 0 functionality.
+- [x] Future knowledge-domain modules remain scaffolding only; Phase 0 does not
+  implement entities, concepts, assertions, relationships, storage, search,
+  traversal, ingestion, reasoning, or ML.
+- [x] Level 1 unit tests cover the implemented lifecycle, registration,
+  capability, runtime, and facade behavior.
+- [x] Level 2/3 integration and conformance tests cover the complete Core-backed
+  Phase 0 path, including positive and negative lifecycle, registration,
+  targeting, request, context, dispatch, drain, and shutdown behavior.
+- [x] The final Phase 0 test suite contains 33 unit tests and 35 Level 3 tests
+  in the supplied implementation snapshot.
+
+#### Phase 0 Decisions Recorded During Implementation
+
+- **[x] Core remains authoritative.** KG adapts to Core and does not recreate
+  runtime, lifecycle, registry, Control Plane, capability dispatch, or
+  universal contracts.
+- **[x] Minimal capability remains Option A.** Phase 0 proves the admission →
+  resolution → handler → result path without introducing real KG semantics.
+- **[x] Library-first architecture remains frozen.** `src/lib.rs` is the
+  authoritative Phase 0 boundary; the final standalone executable remains
+  deferred.
+- **[x] Engine registration and capability registration remain separate
+  concerns.** Core registration metadata advertises the Phase 0 capability,
+  while the Core capability registry owns executable dispatch.
+- **[x] Target validation is enforced at the KG boundary.** Because Core's
+  request-admission error covers lifecycle admission, the facade exposes
+  explicit target-engine and target-instance mismatch errors rather than
+  inventing a new Core error mechanism.
+- **[x] No knowledge-domain behavior is pulled forward.** The planner,
+  knowledge model, storage, search, ingestion, reasoning, and Python/gRPC
+  functionality remain later-phase concerns.
+- **[x] Testing remains behavior-driven.** Tests verify actual Phase 0 behavior
+  and Core ownership boundaries rather than merely asserting that scaffold
+  files exist.
+
 #### Completion Criteria
 
 Phase 0 is complete when the KG Engine can:
@@ -1790,12 +1868,12 @@ Phase 0 is complete when the KG Engine can:
 
 
 #### Verification Checklist
-- [ ] The phase goal and approved scope are satisfied.
-- [ ] The implementation and module boundaries match the approved architecture.
-- [ ] Positive and negative behavior is covered by appropriate tests.
-- [ ] Previously verified phases remain intact and regression-safe.
-- [ ] Required verification and quality checks pass before completion is declared.
-- [ ] No future-phase functionality was implemented prematurely.
+- [x] The phase goal and approved scope are satisfied.
+- [x] The implementation and module boundaries match the approved architecture.
+- [x] Positive and negative behavior is covered by appropriate tests.
+- [x] Previously verified phases remain intact and regression-safe.
+- [x] Required verification and quality checks pass before completion is declared.
+- [x] No future-phase functionality was implemented prematurely.
 
 #### Final Architectural Principle
 
@@ -1852,7 +1930,7 @@ The first question must be solved without prematurely implementing the second.
 
 #### Status
 
-**Planned**
+**In Progress**
 
 #### Goal
 
@@ -16516,10 +16594,10 @@ These remain future capabilities or later architectural decisions.
 Architecture        → established
 Project scaffold    → created
 Initial decisions   → recorded
-Implementation      → not started
+Implementation      → in progress (Phase 1)
 
-Phase 0             → Planned
-Phase 1             → Planned
+Phase 0             → Completed
+Phase 1             → In Progress
 Phase 2             → Planned
 Phase 3             → Planned
 Phase 4             → Planned

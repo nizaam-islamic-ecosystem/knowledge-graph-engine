@@ -2869,7 +2869,7 @@ Phase 1 deliberately stops at this boundary.
 
 #### Status
 
-**In Progress**
+**Completed**
 
 > These are the current development decisions for Phase 2. They are not
 > irreversible architectural commitments. They may be revisited if
@@ -3004,7 +3004,8 @@ KnowledgeAssertion
 ├── object
 ├── context
 ├── qualifiers
-└── status
+├── status
+└── polarity
 ```
 
 A reusable internal assertion core may be introduced if implementation
@@ -3024,7 +3025,7 @@ Use **deterministic semantic identity**.
 Conceptually:
 
 ``` text
-subject + predicate + object + canonical context/qualifiers
+subject + predicate + object + canonical context/qualifiers + polarity
                          │
                          ▼
               KnowledgeAssertionId
@@ -3033,17 +3034,17 @@ subject + predicate + object + canonical context/qualifiers
 If two assertions are semantically identical according to the canonical
 Phase 2 representation, they receive the same `KnowledgeAssertionId`.
 
-Therefore:
-
-``` text
-same assertion identity
-        ⇒
-same canonical assertion
-```
-
 ##### 5.2 Core identity mechanism
 
-`KnowledgeAssertionId` is declared using Core's `identity!` macro.
+`KnowledgeAssertionId` remains a Core `identity!` type, but it is the one
+Phase 2 identity whose semantic construction is deterministic. The KG uses
+a KG-local wrapper around Core `identity!` to expose
+`KnowledgeAssertionId::from_canonical(...)`. The deterministic semantic
+representation is owned by the KG assertion model; the validated identity
+construction remains delegated to Core.
+
+The Core-generated `generate()` method remains part of the underlying Core
+type contract, but it is not used for semantic assertion identity.
 
 Do not implement:
 
@@ -3053,9 +3054,11 @@ custom ULID
 custom SHA generation
 custom hash generator
 custom timestamp generator
+second generic identity-generation system
 ```
 
-The Core identity mechanism remains authoritative.
+The Core identity mechanism remains authoritative while KG-specific semantic
+determinism remains inside the KG, preserving Core's domain-agnostic role.
 
 ------------------------------------------------------------------------
 
@@ -3063,33 +3066,27 @@ The Core identity mechanism remains authoritative.
 
 ##### Decision
 
-Use a **typed extensible reference representation**.
+Use a **closed typed enum initially**.
 
-Do not hard-code:
-
-``` rust
-subject: EntityId
-object: EntityId
-```
-
-because KG relationships may cross semantic dimensions:
+The Phase 2 representation is implemented as:
 
 ``` text
-Entity → Concept
-Entity → LexicalForm
-Mention → Entity
-Concept → Concept
-Source → Reference
+AssertionObject
+├── Entity(EntityId)
+├── Concept(ConceptId)
+├── Source(SourceId)
+├── Reference(ReferenceId)
+├── LexicalForm(LexicalFormId)
+└── Mention(MentionId)
 ```
 
-A closed enum is not preferred because future semantic object categories
-would require repeatedly changing the enum.
+The enum is used for both subject and object positions. This provides strong
+compile-time type safety while preserving the identity types established in
+Phase 1.
 
-A completely untyped generic reference is also not preferred because it
-can allow incompatible type/ID combinations.
-
-The Phase 1 semantic-reference foundation should be reused/enriched
-rather than creating a competing reference system.
+Future phases may add new variants when additional first-class semantic
+object categories are actually required. The Phase 1 semantic-reference
+foundation is reused rather than creating a competing reference system.
 
 ------------------------------------------------------------------------
 
@@ -3206,8 +3203,8 @@ The implementation must preserve this distinction.
 
 ##### Decision
 
-Relationship characteristics are represented with **metadata and
-automatic structural/semantic behavior**.
+Relationship characteristics are represented with **structural behavior only**
+in Phase 2.
 
 The relationship model can express characteristics such as:
 
@@ -3221,24 +3218,10 @@ functional
 
 and can be extended later.
 
-Automatic behavior here does not make Phase 2 the full reasoning engine.
-
-For example:
-
-``` text
-A ── R ──> B
-B ── R ──> C
-```
-
-must not automatically produce:
-
-``` text
-A ── R ──> C
-```
-
-merely because `R` is transitive.
-
-Knowledge derivation belongs to the controlled reasoning architecture.
+Phase 2 may expose safe structural behavior, such as a symmetric reverse
+view, but characteristics do not derive new knowledge, execute transitive
+inference, generate reflexive assertions, or enforce the complete functional
+constraint system. Later reasoning phases execute semantic inference.
 
 ------------------------------------------------------------------------
 
@@ -3381,33 +3364,23 @@ unnecessary duplicate identities for the underlying semantic objects.
 
 #### 15. Graph Identity
 
-Every KG identity introduced in this and all future phases follows one
-universal rule:
+Every KG identity introduced in this and all future phases uses Core's
+`identity!` macro. A semantic identity may use a different construction path
+only when the KG has an explicit deterministic semantic-identity requirement.
 
-``` text
-KG identity type
-      │
-      ▼
-Core identity! macro
-      │
-      ▼
-generate()
-```
-
-This applies to:
+For Phase 2:
 
 ``` text
 KnowledgeAssertionId
+    = Core identity! type
+    + KG deterministic from_canonical(...) semantic construction
+
 GraphNodeId
 GraphEdgeId
-PathId
-future KG identity types
+    = Core identity! types with normal Core generation
 ```
 
-and any other identity type introduced later.
-
-No second identity-generation mechanism may be introduced in KG.
-
+No second generic identity-generation mechanism may be introduced in KG.
 Tests must verify identity properties rather than hard-code generated ID
 values.
 
@@ -4025,7 +3998,7 @@ Phase 6 functionality.
 
 #### 42. File Responsibilities
 
-##### `src/assertion/assertion.rs`
+##### `src/assertion/model.rs`
 
 Own:
 
@@ -4062,7 +4035,7 @@ Own generic Phase 2 qualifier representation.
 
 Own the Phase 2 epistemic status representation.
 
-##### `src/relationship/relationship.rs`
+##### `src/relationship/model.rs`
 
 Own the core relationship definition:
 
@@ -4112,7 +4085,7 @@ Avoid unnecessary duplicate semantic identities.
 Own structural graph-edge representation associated with the canonical
 assertion.
 
-##### `src/graph/graph.rs`
+##### `src/graph/model.rs`
 
 Own basic graph structure and adjacency primitives.
 
@@ -4594,82 +4567,197 @@ Phase 8 can execute controlled reasoning over that rule.
 
 ------------------------------------------------------------------------
 
+#### Phase 2 Implementation Record
+
+The supplied Phase 2 implementation snapshot was extracted and compared
+against the approved Phase 2 scope. The following functionality is present:
+
+##### Knowledge Assertion
+
+-   [x] `KnowledgeAssertionId` is implemented with Core `identity!` and a
+    KG-local deterministic `from_canonical(...)` construction path.
+-   [x] `KnowledgeAssertion` is a first-class semantic object containing
+    `id`, `subject`, `predicate`, `object`, `context`, `qualifiers`,
+    `status`, and `polarity`.
+-   [x] Canonical assertion identity includes subject, predicate, object,
+    canonical context, canonical qualifiers, and polarity.
+-   [x] Status is excluded from semantic identity.
+-   [x] Structural validation verifies the stored assertion identity against
+    canonical reconstruction.
+-   [x] Positive and negative polarity are represented without a reasoning
+    engine.
+
+##### Typed Assertion References and Supporting Objects
+
+-   [x] `AssertionObject` is a closed typed enum for `Entity`, `Concept`,
+    `Source`, `Reference`, `LexicalForm`, and `Mention`.
+-   [x] The same typed reference abstraction is used for both subject and
+    object positions.
+-   [x] `AssertionPredicate` reuses the relationship predicate abstraction
+    instead of creating a second predicate representation.
+-   [x] `AssertionContext` provides a generic deterministic key/value
+    representation.
+-   [x] `Qualifier`/`Qualifiers` provide generic deterministically ordered
+    assertion qualifiers.
+-   [x] `AssertionStatus` provides the Phase 2 epistemic-status boundary.
+-   [x] `assertion/subject.rs` remains a non-executable later-phase scaffold
+    and is not included in `assertion/mod.rs`.
+
+##### Relationship Model
+
+-   [x] Strongly typed `RelationshipPredicate` with the
+    `kg.relationship.<name>` namespace is implemented.
+-   [x] Canonical predicate parsing accepts the printed canonical form as
+    well as the local-name constructor form.
+-   [x] `RelationshipFamily` is extensible and distinct from the predicate.
+-   [x] `RelationshipDirection` is represented separately from traversal
+    direction.
+-   [x] Relationship characteristics include symmetric, asymmetric,
+    transitive, reflexive, and functional declarations with structural
+    behavior only.
+-   [x] Explicit inverse declarations are implemented without mandatory
+    physical inverse duplication.
+-   [x] Symmetric and inverse semantics remain distinct.
+-   [x] `RelationshipVocabulary` provides deterministic in-memory
+    registration, lookup, and duplicate detection.
+-   [x] `CompositionRule` represents composition declarations without
+    executing reasoning.
+
+##### Graph Model
+
+-   [x] `GraphNode` and Core-backed `GraphNodeId` represent typed semantic
+    references structurally.
+-   [x] `GraphEdge` and Core-backed `GraphEdgeId` represent structural
+    associations to canonical `KnowledgeAssertion` identities.
+-   [x] `Graph` provides in-memory nodes, edges, and basic adjacency.
+-   [x] Repeated semantic references reuse one graph node.
+-   [x] Multiple assertions/relationships between the same semantic objects
+    are supported.
+-   [x] Constructed graph nodes can be explicitly registered, and
+    `add_edge_with_nodes(...)` preserves supplied node identities.
+-   [x] Canonical forward and inverse one-step traversal primitives exist.
+-   [x] Traversal rejects assertion/edge identity mismatches and
+    relationship/assertion predicate mismatches.
+-   [x] Inverse traversal reuses the same canonical edge/assertion and only
+    changes the semantic view.
+-   [x] Symmetric reverse traversal reuses the same predicate.
+-   [x] `graph/path.rs` remains a scaffold with no `PathId` or full path
+    execution.
+
+##### Phase 2 Testing and Conformance
+
+-   [x] Phase 2 external tests exist in `tests/identity.rs`,
+    `tests/assertion.rs`, `tests/relationship.rs`, and `tests/graph.rs`.
+-   [x] `tests/conformance.rs` contains Phase 2 architecture-boundary
+    checks while preserving the Phase 0/Phase 1 conformance coverage.
+-   [x] Module-level tests cover assertion, relationship, graph, and
+    traversal boundaries.
+-   [x] Negative tests cover implemented structural validation and review
+    fixes, including predicate mismatch and invalid graph construction.
+-   [x] Identity tests verify identity properties without asserting concrete
+    Core-generated ID contents.
+-   [x] Inverse and symmetric traversal are tested separately without
+    physically duplicating canonical inverse assertions.
+
+#### Phase 2 Decisions Recorded During Implementation
+
+-   **[x] Deterministic `KnowledgeAssertionId` is a KG-specific semantic
+    requirement.** Core remains domain-agnostic and authoritative for the
+    underlying `identity!` type and validated identity construction; the KG
+    owns only the deterministic semantic construction path.
+-   **[x] Closed typed `AssertionObject` enum was selected for Phase 2.** It
+    provides strong compile-time type safety. Later phases may add variants
+    when new semantic object categories are required.
+-   **[x] Relationship characteristics are structural-only in Phase 2.**
+    They do not execute reasoning or derive assertions.
+-   **[x] Canonical inverse representation uses semantic reverse views.**
+    No duplicate canonical inverse assertion is required.
+-   **[x] Symmetric relationships remain distinct from inverse relationships.**
+-   **[x] Predicate `Display` and parsing are coherent.** Canonical printed
+    predicates are accepted while `new(...)` continues to take local names.
+-   **[x] Constructed graph nodes remain caller-owned structural values.**
+    Explicit registration APIs preserve their identities without weakening
+    the graph's registered-node invariant.
+-   **[x] Full ontology validation, full query/path traversal, physical
+    persistence, reasoning execution, and speculative Indexing integration
+    remain deferred to their designated phases.**
+
 #### Completion Criteria
 
 Phase 2 is complete when:
 
 ##### Knowledge Assertion
 
--   [ ] `KnowledgeAssertionId` exists.
--   [ ] Deterministic semantic assertion identity exists.
--   [ ] Core `identity!` is used.
--   [ ] Subject/object use typed extensible references.
--   [ ] Predicate is strongly typed.
--   [ ] Context exists.
--   [ ] Qualifiers exist.
--   [ ] Simple epistemic status exists.
--   [ ] Structural assertion validation exists.
--   [ ] Positive/negative polarity representation exists without full
+-   [x] `KnowledgeAssertionId` exists.
+-   [x] Deterministic semantic assertion identity exists.
+-   [x] Core `identity!` is used.
+-   [x] Subject/object use typed extensible references.
+-   [x] Predicate is strongly typed.
+-   [x] Context exists.
+-   [x] Qualifiers exist.
+-   [x] Simple epistemic status exists.
+-   [x] Structural assertion validation exists.
+-   [x] Positive/negative polarity representation exists without full
     reasoning.
 
 ###### Relationship
 
--   [ ] Relationship definition exists.
--   [ ] Relationship predicate exists.
--   [ ] `kg.relationship.<name>` namespace exists.
--   [ ] Relationship family exists.
--   [ ] Relationship characteristics exist.
--   [ ] Semantic direction exists.
--   [ ] Explicit inverse declarations exist.
--   [ ] Symmetric and inverse semantics remain distinct.
--   [ ] Relationship vocabulary exists.
--   [ ] Vocabulary is incrementally extensible.
--   [ ] Composition rules can be represented without executing full
+-   [x] Relationship definition exists.
+-   [x] Relationship predicate exists.
+-   [x] `kg.relationship.<name>` namespace exists.
+-   [x] Relationship family exists.
+-   [x] Relationship characteristics exist.
+-   [x] Semantic direction exists.
+-   [x] Explicit inverse declarations exist.
+-   [x] Symmetric and inverse semantics remain distinct.
+-   [x] Relationship vocabulary exists.
+-   [x] Vocabulary is incrementally extensible.
+-   [x] Composition rules can be represented without executing full
     reasoning.
 
 ###### Graph
 
--   [ ] Graph node exists.
--   [ ] Graph edge exists.
--   [ ] Graph edges reference canonical assertions.
--   [ ] Multiple relationships between objects are supported.
--   [ ] Basic graph structure exists.
--   [ ] Canonical forward traversal primitive exists.
--   [ ] Inverse traversal primitive exists.
--   [ ] Traversal preserves semantic direction.
--   [ ] Full query/traversal remains Phase 6 responsibility.
+-   [x] Graph node exists.
+-   [x] Graph edge exists.
+-   [x] Graph edges reference canonical assertions.
+-   [x] Multiple relationships between objects are supported.
+-   [x] Basic graph structure exists.
+-   [x] Canonical forward traversal primitive exists.
+-   [x] Inverse traversal primitive exists.
+-   [x] Traversal preserves semantic direction.
+-   [x] Full query/traversal remains Phase 6 responsibility.
 
 ###### Boundaries
 
--   [ ] No physical storage implementation.
--   [ ] No full ontology engine.
--   [ ] No full semantic-validation engine.
--   [ ] No full reasoning engine.
--   [ ] No speculative Indexing integration.
--   [ ] No duplicate Core identity generation.
--   [ ] No duplicate Control Plane.
--   [ ] No speculative relationship vocabulary.
+-   [x] No physical storage implementation.
+-   [x] No full ontology engine.
+-   [x] No full semantic-validation engine.
+-   [x] No full reasoning engine.
+-   [x] No speculative Indexing integration.
+-   [x] No duplicate Core identity generation.
+-   [x] No duplicate Control Plane.
+-   [x] No speculative relationship vocabulary.
 
 ###### Testing
 
--   [ ] Implemented Phase 2 behavior has focused tests.
--   [ ] Negative tests exist for implemented validation.
--   [ ] Identity tests do not assert generated ID contents.
--   [ ] Inverse traversal is tested without duplicated inverse
+-   [x] Implemented Phase 2 behavior has focused tests.
+-   [x] Negative tests exist for implemented validation.
+-   [x] Identity tests do not assert generated ID contents.
+-   [x] Inverse traversal is tested without duplicated inverse
     assertions.
--   [ ] Symmetry and inverse semantics are tested separately.
--   [ ] Graph and assertion responsibilities are tested separately.
+-   [x] Symmetry and inverse semantics are tested separately.
+-   [x] Graph and assertion responsibilities are tested separately.
 
 ------------------------------------------------------------------------
 
 
 #### Verification Checklist
-- [ ] The phase goal and approved scope are satisfied.
-- [ ] The implementation and module boundaries match the approved architecture.
-- [ ] Positive and negative behavior is covered by appropriate tests.
-- [ ] Previously verified phases remain intact and regression-safe.
-- [ ] Required verification and quality checks pass before completion is declared.
-- [ ] No future-phase functionality was implemented prematurely.
+- [x] The phase goal and approved scope are satisfied.
+- [x] The implementation and module boundaries match the approved architecture.
+- [x] Positive and negative behavior is covered by appropriate tests.
+- [x] Previously verified phases remain intact and regression-safe.
+- [x] Required verification and quality checks pass before completion is declared.
+- [x] No future-phase functionality was implemented prematurely.
 
 #### Final Architectural Principle
 
@@ -4726,7 +4814,7 @@ Composition rules
 
 #### Status
 
-**Planned**
+**In Progress**
 
 ---
 

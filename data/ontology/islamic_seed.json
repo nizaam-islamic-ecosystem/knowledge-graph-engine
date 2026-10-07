@@ -1,0 +1,63 @@
+{
+  "name": "islamic-core",
+  "classes": [
+    {
+      "key": "person",
+      "label": "Person"
+    },
+    {
+      "key": "prophet",
+      "label": "Prophet"
+    },
+    {
+      "key": "companion",
+      "label": "Companion"
+    },
+    {
+      "key": "place",
+      "label": "Place"
+    },
+    {
+      "key": "organization",
+      "label": "Organization"
+    },
+    {
+      "key": "religious_text",
+      "label": "ReligiousText"
+    },
+    {
+      "key": "quran",
+      "label": "Quran"
+    },
+    {
+      "key": "hadith",
+      "label": "Hadith"
+    },
+    {
+      "key": "event",
+      "label": "Event"
+    },
+    {
+      "key": "concept",
+      "label": "Concept"
+    }
+  ],
+  "taxonomy": [
+    {
+      "child": "prophet",
+      "parent": "person"
+    },
+    {
+      "child": "companion",
+      "parent": "person"
+    },
+    {
+      "child": "quran",
+      "parent": "religious_text"
+    },
+    {
+      "child": "hadith",
+      "parent": "religious_text"
+    }
+  ]
+}

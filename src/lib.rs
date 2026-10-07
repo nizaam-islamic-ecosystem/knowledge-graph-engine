@@ -122,3 +122,40 @@ pub use graph::{
     Graph, GraphEdge, GraphEdgeError, GraphEdgeId, GraphError, GraphNode, GraphNodeId,
     TraversalDirection, TraversalError, TraversalStep, traverse,
 };
+
+// -----------------------------------------------------------------------------
+// Phase 3 ontology public surface
+// -----------------------------------------------------------------------------
+
+pub use ontology::{
+    CardinalityConstraint, Class, ClassId, ClassSet, ClassTaxonomy, ConceptTaxonomy,
+    ConstraintExtension, ConstraintSet, IslamicSeed, IslamicSeedError, Ontology,
+    OntologyConstraint, OntologyConstraintError, OntologyError, OntologyProperty,
+    OntologyPropertyValidationError, OntologyRegistry, OntologyRegistryError, OntologySnapshot,
+    OntologySnapshotId, Taxonomy, TaxonomyError, ValidationIssue, ValidationReport,
+    load_islamic_seed, load_islamic_seed_from_str,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 3 semantics public surface
+// -----------------------------------------------------------------------------
+
+pub use semantics::{
+    Context, ContextDimension, ContextDimensionKey, ContextError, ContextId, ContextKind,
+    Interpretation, InterpretationSource, LexicalConceptMapping, LexicalConceptMappingError,
+    LexicalConceptMappingKind, Meaning, SemanticRelation, SemanticType, SemanticTypeMembership,
+    SemanticTypeTarget, SemanticTypes, SenseReference, SenseReferenceError,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 3 entity-resolution public surface
+// -----------------------------------------------------------------------------
+
+pub use resolution::{
+    Candidate, CandidateSignal, CircularEvidenceGuard, EntityCandidateProfile, ExternalIdentifier,
+    ExternalIdentifierCrosswalk, ExternalIdentifierError, GraphEvidenceDependency,
+    NormalizationError, RankingPolicy, ResolutionDecision, ResolutionDependencyToken,
+    ResolutionError, ResolutionInput, ResolutionPolicy, ResolutionReference, ResolutionResult,
+    ResolutionState, Resolver, decide, exact_match, generate_candidates, normalize,
+    normalized_match, provisional, rank_candidates, rejected, transliteration_match,
+};

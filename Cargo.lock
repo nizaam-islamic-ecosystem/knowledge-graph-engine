@@ -239,6 +239,7 @@ dependencies = [
  "nizaam-core",
  "nizaam-indexing",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

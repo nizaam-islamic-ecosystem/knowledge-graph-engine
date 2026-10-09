@@ -11,7 +11,7 @@
 //! implemented or part of the current Phase 2 semantic contract.
 //!
 //! The public `use`/re-export surface below exposes the currently established
-//! Phase 0, Phase 1, and Phase 2 contracts without recreating Core or Indexing
+//! Phase 0 through Phase 3 contracts without recreating Core or Indexing
 //! types.
 //!
 //! Core remains authoritative for universal runtime, lifecycle, request
@@ -121,4 +121,41 @@ pub use relationship::{
 pub use graph::{
     Graph, GraphEdge, GraphEdgeError, GraphEdgeId, GraphError, GraphNode, GraphNodeId,
     TraversalDirection, TraversalError, TraversalStep, traverse,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 3 ontology public surface
+// -----------------------------------------------------------------------------
+
+pub use ontology::{
+    CardinalityConstraint, Class, ClassId, ClassSet, ClassTaxonomy, ConceptTaxonomy,
+    ConstraintExtension, ConstraintSet, IslamicSeed, IslamicSeedError, Ontology,
+    OntologyConstraint, OntologyConstraintError, OntologyError, OntologyProperty,
+    OntologyPropertyValidationError, OntologyRegistry, OntologyRegistryError, OntologySnapshot,
+    OntologySnapshotId, Taxonomy, TaxonomyError, ValidationIssue, ValidationReport,
+    load_islamic_seed, load_islamic_seed_from_str,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 3 semantics public surface
+// -----------------------------------------------------------------------------
+
+pub use semantics::{
+    Context, ContextDimension, ContextDimensionKey, ContextError, ContextId, ContextKind,
+    Interpretation, InterpretationSource, LexicalConceptMapping, LexicalConceptMappingError,
+    LexicalConceptMappingKind, Meaning, SemanticRelation, SemanticType, SemanticTypeError,
+    SemanticTypeMembership, SemanticTypeTarget, SemanticTypes, SenseReference, SenseReferenceError,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 3 entity-resolution public surface
+// -----------------------------------------------------------------------------
+
+pub use resolution::{
+    Candidate, CandidateSignal, CircularEvidenceGuard, EntityCandidateProfile, ExternalIdentifier,
+    ExternalIdentifierCrosswalk, ExternalIdentifierError, GraphEvidenceDependency,
+    NormalizationError, RankingPolicy, ResolutionDecision, ResolutionDependencyToken,
+    ResolutionError, ResolutionInput, ResolutionPolicy, ResolutionReference, ResolutionResult,
+    ResolutionState, Resolver, decide, exact_match, generate_candidates, normalize,
+    normalized_match, provisional, rank_candidates, rejected, transliteration_match,
 };

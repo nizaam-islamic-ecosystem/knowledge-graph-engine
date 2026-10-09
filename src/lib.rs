@@ -11,7 +11,7 @@
 //! implemented or part of the current Phase 2 semantic contract.
 //!
 //! The public `use`/re-export surface below exposes the currently established
-//! Phase 0, Phase 1, and Phase 2 contracts without recreating Core or Indexing
+//! Phase 0 through Phase 3 contracts without recreating Core or Indexing
 //! types.
 //!
 //! Core remains authoritative for universal runtime, lifecycle, request
@@ -143,8 +143,8 @@ pub use ontology::{
 pub use semantics::{
     Context, ContextDimension, ContextDimensionKey, ContextError, ContextId, ContextKind,
     Interpretation, InterpretationSource, LexicalConceptMapping, LexicalConceptMappingError,
-    LexicalConceptMappingKind, Meaning, SemanticRelation, SemanticType, SemanticTypeMembership,
-    SemanticTypeTarget, SemanticTypes, SenseReference, SenseReferenceError,
+    LexicalConceptMappingKind, Meaning, SemanticRelation, SemanticType, SemanticTypeError,
+    SemanticTypeMembership, SemanticTypeTarget, SemanticTypes, SenseReference, SenseReferenceError,
 };
 
 // -----------------------------------------------------------------------------

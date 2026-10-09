@@ -3,13 +3,13 @@
 //! Candidates are working representations only. They deliberately have no
 //! `CandidateId` and cannot create or mutate canonical entities.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::identity::{EntityId, MentionId, ReferenceId, SourceId};
 
 use super::crosswalk::ExternalIdentifier;
-use super::matching::{exact_match, normalized_match, transliteration_match};
+use super::matching::{exact_match, normalize};
 
 /// The source-level object being resolved.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -60,7 +60,10 @@ impl ResolutionInput {
     /// Adds a source-provided identifier used by exact identifier matching.
     #[must_use]
     pub fn with_identifier(mut self, identifier: impl Into<String>) -> Self {
-        self.identifier = Some(identifier.into());
+        let identifier = identifier.into();
+        if !identifier.trim().is_empty() {
+            self.identifier = Some(identifier);
+        }
         self
     }
 
@@ -238,14 +241,20 @@ impl EntityCandidateProfile {
     /// Adds an exact alias representation.
     #[must_use]
     pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
-        self.aliases.push(alias.into());
+        let alias = alias.into();
+        if !alias.trim().is_empty() {
+            self.aliases.push(alias);
+        }
         self
     }
 
     /// Adds an identifier value used for exact identifier matching.
     #[must_use]
     pub fn with_identifier(mut self, identifier: impl Into<String>) -> Self {
-        self.identifiers.insert(identifier.into());
+        let identifier = identifier.into();
+        if !identifier.trim().is_empty() {
+            self.identifiers.insert(identifier);
+        }
         self
     }
 
@@ -476,29 +485,40 @@ impl Candidate {
 /// profiles.
 ///
 /// This function performs high-recall deterministic candidate generation only.
-/// It does not rank, canonicalize, merge, persist, or mutate entities.
+/// It does not rank, canonicalize, merge canonical entities, persist, or mutate
+/// entities. Profiles for the same canonical `EntityId` are aggregated into one
+/// candidate so duplicate profile rows cannot create artificial ambiguity.
 pub fn generate_candidates(
     input: &ResolutionInput,
     profiles: &[EntityCandidateProfile],
 ) -> Vec<Candidate> {
-    let mut candidates = Vec::new();
+    let mut candidates_by_entity: BTreeMap<EntityId, BTreeSet<CandidateSignal>> = BTreeMap::new();
+    let normalized_input = normalized_non_empty(input.text());
 
     for profile in profiles {
-        let mut signals = BTreeSet::new();
+        let signals = candidates_by_entity
+            .entry(profile.entity_id().clone())
+            .or_default();
 
         if let Some(identifier) = input.identifier()
+            && !identifier.trim().is_empty()
             && profile
                 .identifiers()
                 .iter()
+                .filter(|value| !value.trim().is_empty())
                 .any(|value| exact_match(identifier, value))
         {
             signals.insert(CandidateSignal::ExactIdentifier);
         }
 
-        if profile
-            .aliases()
-            .iter()
-            .any(|alias| exact_match(input.text(), alias))
+        if normalized_input.is_some()
+            && profile
+                .aliases()
+                .iter()
+                .filter(|alias| !alias.trim().is_empty())
+                .any(|alias| {
+                    normalized_non_empty(alias).is_some() && exact_match(input.text(), alias)
+                })
         {
             signals.insert(CandidateSignal::ExactAlias);
         }
@@ -509,18 +529,26 @@ pub fn generate_candidates(
             signals.insert(CandidateSignal::SourceIdentifier);
         }
 
-        if profile
-            .names()
-            .iter()
-            .chain(profile.aliases())
-            .any(|value| normalized_match(input.text(), value).unwrap_or(false))
+        if let Some(normalized_input) = normalized_input.as_deref()
+            && profile
+                .names()
+                .iter()
+                .chain(profile.aliases())
+                .any(|value| {
+                    normalized_non_empty(value)
+                        .is_some_and(|normalized_value| normalized_value == normalized_input)
+                })
         {
             signals.insert(CandidateSignal::Normalized);
         }
 
         if input.transliterations().iter().any(|reference_form| {
-            profile.transliterations().iter().any(|candidate_form| {
-                transliteration_match(reference_form, candidate_form).unwrap_or(false)
+            normalized_non_empty(reference_form).is_some_and(|reference_normalized| {
+                profile.transliterations().iter().any(|candidate_form| {
+                    normalized_non_empty(candidate_form).is_some_and(|candidate_normalized| {
+                        reference_normalized == candidate_normalized
+                    })
+                })
             })
         }) {
             signals.insert(CandidateSignal::Transliteration);
@@ -553,11 +581,18 @@ pub fn generate_candidates(
         {
             signals.insert(CandidateSignal::GraphNeighborhood);
         }
-
-        if !signals.is_empty() {
-            candidates.push(Candidate::new(profile.entity_id().clone(), signals));
-        }
     }
+
+    let mut candidates: Vec<Candidate> = candidates_by_entity
+        .into_iter()
+        .filter_map(|(entity_id, signals)| {
+            if signals.is_empty() {
+                None
+            } else {
+                Some(Candidate::new(entity_id, signals))
+            }
+        })
+        .collect();
 
     candidates.sort_by(|left, right| {
         right
@@ -567,6 +602,12 @@ pub fn generate_candidates(
     });
 
     candidates
+}
+
+fn normalized_non_empty(value: &str) -> Option<String> {
+    normalize(value)
+        .ok()
+        .filter(|normalized| !normalized.is_empty())
 }
 
 #[cfg(test)]
@@ -676,6 +717,63 @@ mod tests {
                 .signals()
                 .contains(&CandidateSignal::Transliteration)
         );
+    }
+
+    #[test]
+    fn empty_identifiers_and_blank_aliases_do_not_create_textual_candidates() {
+        let profile = EntityCandidateProfile::new(entity("entity-1"))
+            .with_identifier("   ")
+            .with_alias("   ");
+        let input = ResolutionInput::new(
+            ResolutionReference::Mention(MentionId::new("mention-blank").expect("valid mention")),
+            "   ",
+        )
+        .with_identifier("   ");
+
+        assert!(generate_candidates(&input, &[profile]).is_empty());
+    }
+
+    #[test]
+    fn punctuation_only_text_does_not_create_an_exact_alias_candidate() {
+        let profile = EntityCandidateProfile::new(entity("entity-1")).with_alias("—");
+        let input = ResolutionInput::new(
+            ResolutionReference::Mention(
+                MentionId::new("mention-punctuation").expect("valid mention"),
+            ),
+            "—",
+        );
+
+        assert!(generate_candidates(&input, &[profile]).is_empty());
+    }
+
+    #[test]
+    fn profiles_for_the_same_entity_are_aggregated_before_ranking() {
+        let first_profile =
+            EntityCandidateProfile::new(entity("entity-1")).with_identifier("ref-1");
+        let second_profile = EntityCandidateProfile::new(entity("entity-1")).with_alias("Muhammad");
+        let input = ResolutionInput::new(
+            ResolutionReference::Mention(
+                MentionId::new("mention-aggregate").expect("valid mention"),
+            ),
+            "Muhammad",
+        )
+        .with_identifier("ref-1");
+
+        let candidates = generate_candidates(&input, &[first_profile, second_profile]);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].entity_id().as_str(), "entity-1");
+        assert!(
+            candidates[0]
+                .signals()
+                .contains(&CandidateSignal::ExactIdentifier)
+        );
+        assert!(
+            candidates[0]
+                .signals()
+                .contains(&CandidateSignal::ExactAlias)
+        );
+        assert_eq!(candidates[0].primary_priority(), 10);
     }
 
     #[test]

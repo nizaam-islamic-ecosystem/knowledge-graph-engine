@@ -126,6 +126,21 @@ pub enum OntologyConstraint {
 }
 
 impl OntologyConstraint {
+    /// Validates the structural invariants of an ontology constraint.
+    ///
+    /// The enum itself remains public for the closed Phase 3 vocabulary, so
+    /// callers can construct variants directly. This validation closes the
+    /// invariant gap between the public variant and the validated constructors.
+    pub fn validate(&self) -> Result<(), OntologyConstraintError> {
+        match self {
+            Self::Cardinality(_) | Self::Extension(_) => Ok(()),
+            Self::DisjointWith(classes) if classes.is_empty() => {
+                Err(OntologyConstraintError::EmptyDisjointClassSet)
+            }
+            Self::DisjointWith(_) => Ok(()),
+        }
+    }
+
     /// Creates a cardinality constraint.
     pub fn cardinality(
         min: Option<usize>,
@@ -170,9 +185,20 @@ impl ConstraintSet {
         Self::default()
     }
 
-    /// Inserts a constraint, returning whether it was newly inserted.
+    /// Inserts a structurally valid constraint, returning whether it was newly
+    /// inserted. Invalid constraints are not stored; callers that need the
+    /// validation error should use [`Self::try_insert`].
     pub fn insert(&mut self, constraint: OntologyConstraint) -> bool {
-        self.values.insert(constraint)
+        self.try_insert(constraint).unwrap_or(false)
+    }
+
+    /// Inserts a constraint after validating its structural invariants.
+    pub fn try_insert(
+        &mut self,
+        constraint: OntologyConstraint,
+    ) -> Result<bool, OntologyConstraintError> {
+        constraint.validate()?;
+        Ok(self.values.insert(constraint))
     }
 
     /// Returns whether the set contains the supplied constraint.
@@ -359,7 +385,7 @@ mod tests {
         CardinalityConstraint, ConstraintExtension, ConstraintSet, OntologyConstraint,
         OntologyConstraintError, ValidationReport,
     };
-    use crate::ontology::class::ClassId;
+    use crate::{ClassSet, ontology::class::ClassId};
 
     fn class_id(value: &str) -> ClassId {
         ClassId::new(value).expect("valid class identity")
@@ -452,6 +478,20 @@ mod tests {
         assert_eq!(constraints.len(), 2);
         assert!(constraints.contains(&first));
         assert!(constraints.contains(&second));
+    }
+
+    #[test]
+    fn direct_empty_disjointness_variants_are_rejected_by_validation() {
+        let constraint = OntologyConstraint::DisjointWith(ClassSet::new());
+
+        assert_eq!(
+            constraint.validate(),
+            Err(OntologyConstraintError::EmptyDisjointClassSet)
+        );
+
+        let mut constraints = ConstraintSet::new();
+        assert!(!constraints.insert(constraint));
+        assert!(constraints.is_empty());
     }
 
     #[test]

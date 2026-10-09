@@ -15,7 +15,9 @@ use std::collections::BTreeMap;
 use crate::relationship::RelationshipPredicate;
 
 use super::class::{Class, ClassId};
-use super::constraint::{ConstraintSet, OntologyConstraint, ValidationReport};
+use super::constraint::{
+    ConstraintSet, OntologyConstraint, OntologyConstraintError, ValidationReport,
+};
 use super::property::{OntologyProperty, OntologyPropertyValidationError};
 use super::taxonomy::{ClassTaxonomy, TaxonomyError};
 
@@ -161,11 +163,11 @@ impl Ontology {
             return Err(OntologyError::UnknownClass { class_id });
         }
 
-        Ok(self
-            .class_constraints
-            .entry(class_id)
+        self.class_constraints
+            .entry(class_id.clone())
             .or_default()
-            .insert(constraint))
+            .try_insert(constraint)
+            .map_err(|error| OntologyError::InvalidConstraint { class_id, error })
     }
 
     /// Returns constraints attached to a class.
@@ -215,6 +217,17 @@ impl Ontology {
                     "ontology.constraint.unknown_class",
                     format!("constraints reference unknown class {class_id}"),
                 );
+            }
+
+            for constraint in constraints.iter() {
+                if let Err(error) = constraint.validate() {
+                    report.add_error(
+                        "ontology.constraint.invalid",
+                        format!(
+                            "constraint attached to class {class_id} is structurally invalid: {error}"
+                        ),
+                    );
+                }
             }
 
             self.validate_constraint_class_references(constraints, &mut report);
@@ -286,6 +299,15 @@ pub enum OntologyError {
         class_id: ClassId,
     },
 
+    /// The supplied ontology constraint failed structural validation.
+    InvalidConstraint {
+        /// Class receiving the invalid constraint.
+        class_id: ClassId,
+
+        /// Structural constraint validation failure.
+        error: OntologyConstraintError,
+    },
+
     /// The class taxonomy rejected the requested structural relation.
     Taxonomy(TaxonomyError<ClassId>),
 }
@@ -314,6 +336,10 @@ impl fmt::Display for OntologyError {
             Self::UnknownClass { class_id } => {
                 write!(formatter, "ontology class is not registered: {class_id}")
             }
+            Self::InvalidConstraint { class_id, error } => write!(
+                formatter,
+                "ontology constraint for class {class_id} is invalid: {error}"
+            ),
             Self::Taxonomy(error) => error.fmt(formatter),
         }
     }
@@ -327,7 +353,7 @@ mod tests {
     use crate::concept::Concept;
     use crate::identity::ConceptId;
     use crate::ontology::class::{Class, ClassId};
-    use crate::ontology::constraint::OntologyConstraint;
+    use crate::ontology::constraint::{OntologyConstraint, OntologyConstraintError};
     use crate::ontology::property::OntologyProperty;
     use crate::relationship::RelationshipPredicate;
     use std::collections::BTreeSet;
@@ -511,6 +537,32 @@ mod tests {
                 .unwrap()
                 .contains(&constraint)
         );
+    }
+
+    #[test]
+    fn ontology_rejects_directly_constructed_empty_disjointness_constraints() {
+        let mut ontology = Ontology::new();
+        ontology
+            .add_class(class("class-person", "Person"))
+            .expect("class registration should succeed");
+
+        let result = ontology.add_class_constraint(
+            class_id("class-person"),
+            OntologyConstraint::DisjointWith(BTreeSet::new()),
+        );
+
+        assert_eq!(
+            result,
+            Err(OntologyError::InvalidConstraint {
+                class_id: class_id("class-person"),
+                error: OntologyConstraintError::EmptyDisjointClassSet,
+            })
+        );
+        let attached_constraints = ontology
+            .class_constraints(&class_id("class-person"))
+            .expect("the class constraint container may exist after a rejected insertion");
+
+        assert!(attached_constraints.is_empty());
     }
 
     #[test]

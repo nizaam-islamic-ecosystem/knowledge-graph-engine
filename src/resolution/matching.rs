@@ -41,7 +41,10 @@ impl std::error::Error for NormalizationError {}
 ///
 /// Language-specific normalization remains outside the Knowledge Graph.
 pub fn normalize(input: &str) -> Result<String, NormalizationError> {
-    if let Some(index) = input.chars().position(char::is_control) {
+    if let Some(index) = input
+        .chars()
+        .position(|character| character.is_control() && !character.is_whitespace())
+    {
         return Err(NormalizationError::ControlCharacter { index });
     }
 
@@ -54,7 +57,7 @@ pub fn normalize(input: &str) -> Result<String, NormalizationError> {
             continue;
         }
 
-        if character.is_alphanumeric() || !character.is_ascii_punctuation() {
+        if character.is_alphanumeric() || is_mark(character) {
             if pending_space && !output.is_empty() {
                 output.push(' ');
             }
@@ -66,6 +69,51 @@ pub fn normalize(input: &str) -> Result<String, NormalizationError> {
     }
 
     Ok(output.trim().to_owned())
+}
+
+/// Returns whether a character belongs to one of the Unicode combining-mark
+/// ranges handled by the generic normalizer. Rust's stable `char` API exposes
+/// alphabetic and numeric classification directly, but not the Unicode
+/// General Category `M` as a single predicate. These ranges cover the common
+/// combining-mark blocks, including Arabic, while keeping the normalizer
+/// language-neutral and dependency-free.
+#[must_use]
+fn is_mark(character: char) -> bool {
+    let code_point = character as u32;
+
+    matches!(
+        code_point,
+        0x0300..=0x036f
+            | 0x0483..=0x0489
+            | 0x0591..=0x05bd
+            | 0x05bf
+            | 0x05c1..=0x05c2
+            | 0x05c4..=0x05c5
+            | 0x05c7
+            | 0x0610..=0x061a
+            | 0x064b..=0x065f
+            | 0x0670
+            | 0x06d6..=0x06dc
+            | 0x06df..=0x06e4
+            | 0x06e7..=0x06e8
+            | 0x06ea..=0x06ed
+            | 0x0711
+            | 0x0730..=0x074a
+            | 0x07a6..=0x07b0
+            | 0x07eb..=0x07f3
+            | 0x0816..=0x0819
+            | 0x081b..=0x0823
+            | 0x0825..=0x0827
+            | 0x0829..=0x082d
+            | 0x0859..=0x085f
+            | 0x08d3..=0x08ff
+            | 0x1ab0..=0x1aff
+            | 0x1dc0..=0x1dff
+            | 0x20d0..=0x20ff
+            | 0x2de0..=0x2dff
+            | 0xfe20..=0xfe2f
+            | 0xe0100..=0xe01ef
+    )
 }
 
 /// Returns whether two values are exact textual matches.
@@ -135,10 +183,22 @@ mod tests {
     }
 
     #[test]
-    fn control_characters_are_rejected() {
+    fn whitespace_controls_are_collapsed_but_non_whitespace_controls_are_rejected() {
         assert_eq!(
-            normalize("Muh\nammad"),
+            normalize("Muh\nammad\tAli").expect("valid whitespace"),
+            "muh ammad ali"
+        );
+        assert_eq!(
+            normalize("Muh\0ammad"),
             Err(NormalizationError::ControlCharacter { index: 3 })
+        );
+    }
+
+    #[test]
+    fn unicode_punctuation_is_treated_as_a_separator_while_marks_are_preserved() {
+        assert_eq!(
+            normalize("al‑bukhari، مُحَمَّد").expect("valid text"),
+            "al bukhari مُحَمَّد"
         );
     }
 }

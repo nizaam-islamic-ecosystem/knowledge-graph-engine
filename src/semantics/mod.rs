@@ -21,7 +21,9 @@ pub use interpretation::{
     LexicalConceptMappingKind, SemanticRelation, SenseReference, SenseReferenceError,
 };
 pub use meaning::Meaning;
-pub use semantic_type::{SemanticType, SemanticTypeMembership, SemanticTypeTarget, SemanticTypes};
+pub use semantic_type::{
+    SemanticType, SemanticTypeError, SemanticTypeMembership, SemanticTypeTarget, SemanticTypes,
+};
 
 #[cfg(test)]
 mod tests {

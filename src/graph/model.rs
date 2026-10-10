@@ -1,11 +1,12 @@
-//! Basic in-memory graph structure and adjacency for Phase 2.
+//! Basic in-memory graph structure and adjacency for Phase 2 and Phase 6.
 //!
 //! The graph stores structural nodes and edges only. A graph edge references a
 //! canonical `KnowledgeAssertion` by identity; the graph does not become a
 //! second assertion store.
 //!
-//! Full query planning, multi-hop traversal, filtering, ranking, persistence,
-//! and other later-phase behavior are intentionally out of scope here.
+//! Phase 6 adds deterministic incident-edge access required by bounded query
+//! traversal. Query planning, filtering, ranking, persistence, and semantic
+//! interpretation remain outside this structural graph model.
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -275,6 +276,30 @@ impl Graph {
             .unwrap_or_default()
     }
 
+    /// Returns all structural edges incident to a node in deterministic edge-ID
+    /// order.
+    ///
+    /// The result combines outgoing and incoming adjacency and de-duplicates
+    /// self-loop edges. It does not assign semantic direction to an edge; that
+    /// remains the responsibility of the traversal layer.
+    #[must_use]
+    pub fn incident_edges(&self, node_id: &GraphNodeId) -> Vec<&GraphEdge> {
+        let mut edge_ids = BTreeSet::new();
+
+        if let Some(outgoing) = self.outgoing.get(node_id) {
+            edge_ids.extend(outgoing.iter().cloned());
+        }
+
+        if let Some(incoming) = self.incoming.get(node_id) {
+            edge_ids.extend(incoming.iter().cloned());
+        }
+
+        edge_ids
+            .iter()
+            .filter_map(|edge_id| self.edges.get(edge_id))
+            .collect()
+    }
+
     /// Returns the number of graph nodes.
     #[must_use]
     pub fn node_count(&self) -> usize {
@@ -446,6 +471,48 @@ mod tests {
         assert_eq!(graph.incoming_edges(&target).len(), 1);
         assert_eq!(graph.outgoing_edges(&source)[0].id(), &edge_id);
         assert_eq!(graph.incoming_edges(&target)[0].id(), &edge_id);
+    }
+
+    #[test]
+    fn incident_adjacency_combines_incoming_and_outgoing_edges_without_duplicates() {
+        let mut graph = Graph::new();
+        let first = assertion("first", "entity-2");
+        let second = assertion("second", "entity-1");
+
+        graph
+            .add_assertion(&first)
+            .expect("first assertion should be added");
+        graph
+            .add_assertion(&second)
+            .expect("second assertion should be added");
+
+        let center = graph
+            .node_for_reference(first.subject())
+            .expect("center node should exist")
+            .id()
+            .clone();
+
+        let incident = graph.incident_edges(&center);
+
+        assert_eq!(incident.len(), 2);
+        assert!(
+            incident
+                .iter()
+                .any(|edge| edge.assertion_id() == first.id())
+        );
+        assert!(
+            incident
+                .iter()
+                .any(|edge| edge.assertion_id() == second.id())
+        );
+    }
+
+    #[test]
+    fn incident_adjacency_is_empty_for_an_unknown_node() {
+        let graph = Graph::new();
+        let node = GraphNode::new(AssertionObject::Entity(entity("missing")));
+
+        assert!(graph.incident_edges(node.id()).is_empty());
     }
 
     #[test]

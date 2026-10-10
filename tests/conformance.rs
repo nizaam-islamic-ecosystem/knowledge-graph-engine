@@ -642,3 +642,44 @@ fn phase5_ingestion_and_indexing_contracts_are_public_without_duplicate_identity
         TypeId::of::<nizaam_indexing::IndexAssignedId>(),
     );
 }
+
+#[test]
+fn phase6_query_graph_and_index_contracts_are_public_at_the_crate_boundary() {
+    use std::any::TypeId;
+
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::TraversalPath>(),
+        TypeId::of::<nizaam_knowledge_graph::graph::TraversalPath>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::TraversalBounds>(),
+        TypeId::of::<nizaam_knowledge_graph::graph::TraversalBounds>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::IndexStateObservation>(),
+        TypeId::of::<nizaam_knowledge_graph::index::IndexStateObservation>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::QueryRequest>(),
+        TypeId::of::<nizaam_knowledge_graph::query::QueryRequest>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::QueryPlan>(),
+        TypeId::of::<nizaam_knowledge_graph::query::QueryPlan>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::QueryResult>(),
+        TypeId::of::<nizaam_knowledge_graph::query::QueryResult>(),
+    );
+
+    let request = nizaam_knowledge_graph::QueryRequest::Lookup(
+        nizaam_knowledge_graph::LookupRequest::object(
+            nizaam_knowledge_graph::assertion::AssertionObject::Entity(
+                nizaam_knowledge_graph::identity::EntityId::new("phase6-boundary")
+                    .expect("valid entity id"),
+            ),
+        ),
+    );
+    let planned = nizaam_knowledge_graph::plan(&request).expect("public planner should be usable");
+    assert_eq!(planned.kind(), nizaam_knowledge_graph::QueryKind::Lookup);
+}

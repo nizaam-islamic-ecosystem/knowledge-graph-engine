@@ -4,9 +4,11 @@
 //! boundary. Indexing owns the typed indexing event and the assigned identifier
 //! for a source object. The internal `IndexId` is an Indexing assignment-operation
 //! identifier and is intentionally not exposed through the KG publication API.
-//! This module carries only readiness and post-publication synchronization
-//! records; it does not implement transport, index activation, provider selection,
-//! or an Indexing lifecycle.
+//! This module carries readiness and post-publication synchronization records
+//! for the publication boundary. Phase 6 query/search access contracts live in
+//! `crate::index` and delegate to Indexing without being duplicated here. This
+//! module does not implement transport, index activation, provider selection,
+//! query planning, or an Indexing lifecycle.
 
 /// Core request envelope used to carry an Indexing request.
 ///

@@ -1,11 +1,10 @@
-//! Minimal canonical/inverse graph traversal primitives for Phase 2.
+//! Canonical/inverse and bounded multi-hop graph traversal for Phase 2 and Phase 6.
 //!
-//! This module provides one-step structural traversal views only. It does not
-//! implement multi-hop traversal, path execution, filtering, ranking, query
-//! planning, or reasoning.
-//!
-//! Traversal direction is intentionally separate from relationship semantic
-//! direction.
+//! The one-step traversal primitive preserves the Phase 2 semantic contract.
+//! Phase 6 adds explicitly bounded multi-hop traversal and a path result model.
+//! Traversal does not infer new assertions, execute reasoning, or own semantic
+//! relationship storage. Callers resolve the canonical assertion and relationship
+//! definition for each structural edge.
 
 use core::fmt;
 
@@ -13,7 +12,9 @@ use crate::assertion::KnowledgeAssertion;
 use crate::relationship::{Relationship, RelationshipDirection, RelationshipPredicate};
 
 use super::edge::GraphEdge;
+use super::model::Graph;
 use super::node::GraphNodeId;
+use super::path::TraversalPath;
 
 /// Direction in which a graph edge is being traversed.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -42,6 +43,29 @@ impl fmt::Display for TraversalDirection {
     }
 }
 
+/// Explicit upper bound for multi-hop traversal.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TraversalBounds {
+    max_depth: usize,
+}
+
+impl TraversalBounds {
+    /// Creates an explicit traversal bound.
+    ///
+    /// A zero depth is valid and returns only the empty path rooted at the
+    /// starting node. There is deliberately no unbounded/default constructor.
+    #[must_use]
+    pub const fn new(max_depth: usize) -> Self {
+        Self { max_depth }
+    }
+
+    /// Returns the maximum number of traversed edges.
+    #[must_use]
+    pub const fn max_depth(self) -> usize {
+        self.max_depth
+    }
+}
+
 /// Structural traversal failures.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TraversalError {
@@ -61,6 +85,18 @@ pub enum TraversalError {
     /// A reverse traversal was requested but the relationship provides neither
     /// an explicit inverse predicate nor symmetric semantics.
     ReverseTraversalUnavailable,
+
+    /// The starting graph node is not registered in the graph.
+    StartNodeNotFound {
+        /// Missing graph-node identity.
+        node_id: GraphNodeId,
+    },
+
+    /// A bounded traversal resolver could not provide semantic data for an edge.
+    ResolutionUnavailable {
+        /// Canonical assertion identity referenced by the edge.
+        assertion_id: crate::identity::KnowledgeAssertionId,
+    },
 }
 
 impl fmt::Display for TraversalError {
@@ -77,6 +113,15 @@ impl fmt::Display for TraversalError {
             ),
             Self::ReverseTraversalUnavailable => {
                 formatter.write_str("relationship does not provide reverse traversal semantics")
+            }
+            Self::StartNodeNotFound { node_id } => {
+                write!(formatter, "traversal start node not found: {node_id}")
+            }
+            Self::ResolutionUnavailable { assertion_id } => {
+                write!(
+                    formatter,
+                    "traversal semantics could not be resolved for assertion {assertion_id}"
+                )
             }
         }
     }
@@ -203,29 +248,109 @@ pub fn traverse(
     })
 }
 
+/// Resolves semantic data for a structural edge during bounded traversal.
+///
+/// The graph intentionally stores only structural edge data. A caller supplies
+/// the canonical assertion and relationship definition without making the graph
+/// a second assertion or relationship store.
+pub fn traverse_bounded<F>(
+    graph: &Graph,
+    start: &GraphNodeId,
+    direction: TraversalDirection,
+    bounds: TraversalBounds,
+    mut resolve: F,
+) -> Result<Vec<TraversalPath>, TraversalError>
+where
+    F: FnMut(&GraphEdge) -> Result<(KnowledgeAssertion, Relationship), TraversalError>,
+{
+    if graph.node(start).is_none() {
+        return Err(TraversalError::StartNodeNotFound {
+            node_id: start.clone(),
+        });
+    }
+
+    let mut results = Vec::new();
+    let root = TraversalPath::new(start.clone());
+
+    visit_paths(
+        graph,
+        direction,
+        bounds.max_depth(),
+        &mut resolve,
+        root,
+        &mut results,
+    )?;
+
+    Ok(results)
+}
+
+fn visit_paths<F>(
+    graph: &Graph,
+    direction: TraversalDirection,
+    max_depth: usize,
+    resolve: &mut F,
+    path: TraversalPath,
+    results: &mut Vec<TraversalPath>,
+) -> Result<(), TraversalError>
+where
+    F: FnMut(&GraphEdge) -> Result<(KnowledgeAssertion, Relationship), TraversalError>,
+{
+    results.push(path.clone());
+
+    if path.len() >= max_depth {
+        return Ok(());
+    }
+
+    let current = path.end().clone();
+
+    for edge in graph.incident_edges(&current) {
+        let (assertion, relationship) = resolve(edge)?;
+        let step = traverse(edge, &assertion, &relationship, direction)?;
+
+        if step.source() != &current
+            || step.target() == path.start()
+            || path.steps().iter().any(|previous| {
+                previous.source() == step.target() || previous.target() == step.target()
+            })
+        {
+            continue;
+        }
+
+        let mut next = path.clone();
+        next.push(step)
+            .map_err(|_error| TraversalError::ResolutionUnavailable {
+                assertion_id: edge.assertion_id().clone(),
+            })?;
+        visit_paths(graph, direction, max_depth, resolve, next, results)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{TraversalDirection, TraversalError, traverse};
+    use super::{TraversalBounds, TraversalDirection, TraversalError, traverse, traverse_bounded};
     use crate::assertion::{
         AssertionContext, AssertionObject, AssertionPolarity, AssertionPredicate, AssertionStatus,
         KnowledgeAssertion, Qualifiers,
     };
-    use crate::graph::GraphEdge;
+    use crate::graph::{Graph, GraphEdge, GraphNode};
     use crate::identity::EntityId;
     use crate::relationship::{
         Relationship, RelationshipCharacteristic, RelationshipCharacteristics,
         RelationshipDirection, RelationshipFamily, RelationshipPredicate,
     };
+    use std::collections::BTreeMap;
 
     fn entity(value: &str) -> EntityId {
         EntityId::new(value).expect("valid entity identity")
     }
 
-    fn assertion(predicate: &str) -> KnowledgeAssertion {
+    fn assertion(subject: &str, object: &str, predicate: &str) -> KnowledgeAssertion {
         KnowledgeAssertion::new(
-            AssertionObject::Entity(entity("entity-1")),
+            AssertionObject::Entity(entity(subject)),
             AssertionPredicate::new(predicate).expect("valid predicate"),
-            AssertionObject::Entity(entity("entity-2")),
+            AssertionObject::Entity(entity(object)),
             AssertionContext::new(),
             Qualifiers::new(),
             AssertionStatus::Accepted,
@@ -243,15 +368,54 @@ mod tests {
     }
 
     fn edge_for(assertion: &KnowledgeAssertion) -> GraphEdge {
-        let source = crate::graph::GraphNode::new(assertion.subject().clone());
-        let target = crate::graph::GraphNode::new(assertion.object().clone());
+        let source = GraphNode::new(assertion.subject().clone());
+        let target = GraphNode::new(assertion.object().clone());
 
         GraphEdge::new(assertion, &source, &target).expect("valid graph edge")
     }
 
+    fn graph_with_chain() -> (
+        Graph,
+        BTreeMap<crate::identity::KnowledgeAssertionId, (KnowledgeAssertion, Relationship)>,
+    ) {
+        let mut graph = Graph::new();
+        let first = assertion("entity-1", "entity-2", "first");
+        let second = assertion("entity-2", "entity-3", "second");
+        let third = assertion("entity-3", "entity-4", "third");
+
+        graph.add_assertion(&first).expect("first edge");
+        graph.add_assertion(&second).expect("second edge");
+        graph.add_assertion(&third).expect("third edge");
+
+        let mut semantics = BTreeMap::new();
+        semantics.insert(
+            first.id().clone(),
+            (
+                first,
+                relationship("first", RelationshipDirection::SubjectToObject),
+            ),
+        );
+        semantics.insert(
+            second.id().clone(),
+            (
+                second,
+                relationship("second", RelationshipDirection::SubjectToObject),
+            ),
+        );
+        semantics.insert(
+            third.id().clone(),
+            (
+                third,
+                relationship("third", RelationshipDirection::SubjectToObject),
+            ),
+        );
+
+        (graph, semantics)
+    }
+
     #[test]
     fn forward_traversal_follows_subject_to_object_semantics() {
-        let assertion = assertion("has-name");
+        let assertion = assertion("entity-1", "entity-2", "has-name");
         let edge = edge_for(&assertion);
         let relationship = relationship("has-name", RelationshipDirection::SubjectToObject);
 
@@ -274,7 +438,7 @@ mod tests {
 
     #[test]
     fn forward_traversal_respects_object_to_subject_semantics() {
-        let assertion = assertion("name-of");
+        let assertion = assertion("entity-1", "entity-2", "name-of");
         let edge = edge_for(&assertion);
         let relationship = relationship("name-of", RelationshipDirection::ObjectToSubject);
 
@@ -296,7 +460,7 @@ mod tests {
 
     #[test]
     fn inverse_traversal_uses_the_declared_inverse_without_new_assertion() {
-        let assertion = assertion("has-name");
+        let assertion = assertion("entity-1", "entity-2", "has-name");
         let edge = edge_for(&assertion);
 
         let relationship = relationship("has-name", RelationshipDirection::SubjectToObject)
@@ -325,7 +489,7 @@ mod tests {
 
     #[test]
     fn symmetric_reverse_traversal_reuses_the_same_predicate() {
-        let assertion = assertion("aliases");
+        let assertion = assertion("entity-1", "entity-2", "aliases");
         let edge = edge_for(&assertion);
 
         let relationship = Relationship::new(
@@ -351,7 +515,7 @@ mod tests {
 
     #[test]
     fn reverse_traversal_without_inverse_or_symmetry_is_rejected() {
-        let assertion = assertion("related-to");
+        let assertion = assertion("entity-1", "entity-2", "related-to");
         let edge = edge_for(&assertion);
         let relationship = relationship("related-to", RelationshipDirection::SubjectToObject);
 
@@ -368,8 +532,8 @@ mod tests {
 
     #[test]
     fn traversal_rejects_an_unrelated_assertion() {
-        let kgassertion = assertion("has-name");
-        let other_assertion = assertion("aliases");
+        let kgassertion = assertion("entity-1", "entity-2", "has-name");
+        let other_assertion = assertion("entity-1", "entity-2", "aliases");
         let edge = edge_for(&kgassertion);
         let relationship = relationship("has-name", RelationshipDirection::SubjectToObject);
 
@@ -386,7 +550,7 @@ mod tests {
 
     #[test]
     fn traversal_rejects_a_relationship_with_a_different_predicate() {
-        let assertion = assertion("has-name");
+        let assertion = assertion("entity-1", "entity-2", "has-name");
         let edge = edge_for(&assertion);
         let relationship = relationship("aliases", RelationshipDirection::SubjectToObject);
 
@@ -411,7 +575,7 @@ mod tests {
 
     #[test]
     fn traversal_direction_is_not_the_relationship_semantic_direction() {
-        let assertion = assertion("has-name");
+        let assertion = assertion("entity-1", "entity-2", "has-name");
         let edge = edge_for(&assertion);
         let relationship = relationship("has-name", RelationshipDirection::SubjectToObject)
             .with_inverse_predicate(
@@ -432,5 +596,111 @@ mod tests {
             inverse.semantic_direction(),
             RelationshipDirection::SubjectToObject
         );
+    }
+
+    #[test]
+    fn bounded_traversal_is_explicitly_depth_limited_and_deterministic_within_a_graph() {
+        let (graph, semantics) = graph_with_chain();
+        let start = graph
+            .node_for_reference(&AssertionObject::Entity(entity("entity-1")))
+            .expect("start node")
+            .id()
+            .clone();
+
+        let results = traverse_bounded(
+            &graph,
+            &start,
+            TraversalDirection::Forward,
+            TraversalBounds::new(2),
+            |edge| {
+                semantics.get(edge.assertion_id()).cloned().ok_or_else(|| {
+                    TraversalError::ResolutionUnavailable {
+                        assertion_id: edge.assertion_id().clone(),
+                    }
+                })
+            },
+        )
+        .expect("bounded traversal should succeed");
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].len(), 0);
+        assert_eq!(results[1].len(), 1);
+        assert_eq!(results[2].len(), 2);
+        let entity_3 = graph
+            .node_for_reference(&AssertionObject::Entity(entity("entity-3")))
+            .expect("entity-3 node")
+            .id()
+            .clone();
+        assert_eq!(results[2].end(), &entity_3);
+    }
+
+    #[test]
+    fn bounded_traversal_rejects_unknown_start_nodes() {
+        let graph = Graph::new();
+        let start = GraphNode::new(AssertionObject::Entity(entity("missing")));
+
+        let error = traverse_bounded(
+            &graph,
+            start.id(),
+            TraversalDirection::Forward,
+            TraversalBounds::new(1),
+            |_edge| {
+                Err(TraversalError::ResolutionUnavailable {
+                    assertion_id: crate::identity::KnowledgeAssertionId::generate(),
+                })
+            },
+        )
+        .expect_err("unknown start must be rejected");
+
+        assert_eq!(
+            error,
+            TraversalError::StartNodeNotFound {
+                node_id: start.id().clone(),
+            }
+        );
+    }
+
+    #[test]
+    fn bounded_traversal_does_not_revisit_a_node_on_the_same_path() {
+        let (mut graph, mut semantics) = graph_with_chain();
+        let cycle = assertion("entity-4", "entity-2", "cycle");
+        graph.add_assertion(&cycle).expect("cycle edge");
+        semantics.insert(
+            cycle.id().clone(),
+            (
+                cycle,
+                relationship("cycle", RelationshipDirection::SubjectToObject),
+            ),
+        );
+
+        let start = graph
+            .node_for_reference(&AssertionObject::Entity(entity("entity-1")))
+            .expect("start node")
+            .id()
+            .clone();
+
+        let results = traverse_bounded(
+            &graph,
+            &start,
+            TraversalDirection::Forward,
+            TraversalBounds::new(5),
+            |edge| {
+                semantics.get(edge.assertion_id()).cloned().ok_or_else(|| {
+                    TraversalError::ResolutionUnavailable {
+                        assertion_id: edge.assertion_id().clone(),
+                    }
+                })
+            },
+        )
+        .expect("cycle should be handled");
+
+        assert!(results.iter().all(|path| path.len() <= 4));
+        assert!(results.iter().all(|path| {
+            let mut nodes = std::collections::BTreeSet::new();
+            nodes.insert(path.start().clone());
+            path.steps()
+                .iter()
+                .all(|step| nodes.insert(step.target().clone()))
+        }));
     }
 }

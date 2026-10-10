@@ -8,7 +8,8 @@ use nizaam_knowledge_graph::assertion::{
     KnowledgeAssertion, Qualifiers,
 };
 use nizaam_knowledge_graph::graph::{
-    Graph, GraphNode, TraversalDirection, TraversalError, traverse,
+    Graph, GraphNode, PathError, TraversalBounds, TraversalDirection, TraversalError,
+    TraversalPath, traverse, traverse_bounded,
 };
 use nizaam_knowledge_graph::identity::EntityId;
 use nizaam_knowledge_graph::relationship::{
@@ -212,4 +213,147 @@ fn inverse_traversal_requires_inverse_or_symmetric_relationship_semantics() {
     .expect_err("reverse traversal should be unavailable");
 
     assert_eq!(error, TraversalError::ReverseTraversalUnavailable);
+}
+
+#[test]
+fn traversal_path_requires_connected_steps_and_preserves_endpoints() {
+    let first = assertion("first", "entity-1", "entity-2");
+    let second = assertion("second", "entity-2", "entity-3");
+    let shared_middle = GraphNode::new(first.object().clone());
+    let first_edge = {
+        let source = GraphNode::new(first.subject().clone());
+        nizaam_knowledge_graph::graph::GraphEdge::new(&first, &source, &shared_middle)
+            .expect("first edge should be valid")
+    };
+    let second_edge = {
+        let target = GraphNode::new(second.object().clone());
+        nizaam_knowledge_graph::graph::GraphEdge::new(&second, &shared_middle, &target)
+            .expect("second edge should be valid")
+    };
+    let first_relationship = relationship("first", RelationshipCharacteristics::new());
+    let second_relationship = relationship("second", RelationshipCharacteristics::new());
+    let first_step = traverse(
+        &first_edge,
+        &first,
+        &first_relationship,
+        TraversalDirection::Forward,
+    )
+    .expect("first step should be valid");
+    let second_step = traverse(
+        &second_edge,
+        &second,
+        &second_relationship,
+        TraversalDirection::Forward,
+    )
+    .expect("second step should be valid");
+
+    let mut path = TraversalPath::new(first_step.source().clone());
+    path.push(first_step).expect("first step should connect");
+    path.push(second_step).expect("second step should connect");
+
+    assert_eq!(path.len(), 2);
+    assert_eq!(path.start(), path.steps()[0].source());
+    assert_eq!(path.end(), path.steps()[1].target());
+
+    let disconnected = assertion("other", "entity-9", "entity-10");
+    let disconnected_edge = {
+        let source = GraphNode::new(disconnected.subject().clone());
+        let target = GraphNode::new(disconnected.object().clone());
+        nizaam_knowledge_graph::graph::GraphEdge::new(&disconnected, &source, &target)
+            .expect("disconnected edge should be valid")
+    };
+    let disconnected_step = traverse(
+        &disconnected_edge,
+        &disconnected,
+        &relationship("other", RelationshipCharacteristics::new()),
+        TraversalDirection::Forward,
+    )
+    .expect("disconnected step should be semantically valid");
+
+    assert!(matches!(
+        path.clone().push(disconnected_step),
+        Err(PathError::Disconnected { .. })
+    ));
+}
+
+#[test]
+fn bounded_traversal_is_explicitly_depth_limited_and_cycle_safe() {
+    let first = assertion("first", "entity-1", "entity-2");
+    let second = assertion("second", "entity-2", "entity-3");
+    let cycle = assertion("cycle", "entity-3", "entity-1");
+    let mut graph = Graph::new();
+    graph.add_assertion(&first).expect("first edge");
+    graph.add_assertion(&second).expect("second edge");
+    graph.add_assertion(&cycle).expect("cycle edge");
+
+    let semantics = [
+        (
+            first.id().clone(),
+            first.clone(),
+            relationship("first", RelationshipCharacteristics::new()),
+        ),
+        (
+            second.id().clone(),
+            second.clone(),
+            relationship("second", RelationshipCharacteristics::new()),
+        ),
+        (
+            cycle.id().clone(),
+            cycle.clone(),
+            relationship("cycle", RelationshipCharacteristics::new()),
+        ),
+    ];
+    let start = graph
+        .node_for_reference(first.subject())
+        .expect("start node should exist")
+        .id()
+        .clone();
+
+    let paths = traverse_bounded(
+        &graph,
+        &start,
+        TraversalDirection::Forward,
+        TraversalBounds::new(2),
+        |edge| {
+            semantics
+                .iter()
+                .find(|(id, _, _)| id == edge.assertion_id())
+                .map(|(_, assertion, relationship)| (assertion.clone(), relationship.clone()))
+                .ok_or(TraversalError::ResolutionUnavailable {
+                    assertion_id: edge.assertion_id().clone(),
+                })
+        },
+    )
+    .expect("bounded traversal should succeed");
+
+    assert_eq!(paths[0].len(), 0);
+    assert!(paths.iter().any(|path| path.len() == 1));
+    assert!(paths.iter().any(|path| path.len() == 2));
+    assert!(paths.iter().all(|path| path.len() <= 2));
+    assert_eq!(paths.iter().filter(|path| path.len() == 3).count(), 0);
+}
+
+#[test]
+fn incident_edge_order_is_deterministic_for_bounded_traversal_inputs() {
+    let first = assertion("first", "entity-1", "entity-3");
+    let second = assertion("second", "entity-1", "entity-2");
+    let mut graph = Graph::new();
+    graph.add_assertion(&first).expect("first edge");
+    graph.add_assertion(&second).expect("second edge");
+
+    let node = graph
+        .node_for_reference(first.subject())
+        .expect("shared source node should exist");
+    let first_observation = graph
+        .incident_edges(node.id())
+        .iter()
+        .map(|edge| edge.assertion_id().as_str().to_owned())
+        .collect::<Vec<_>>();
+    let second_observation = graph
+        .incident_edges(node.id())
+        .iter()
+        .map(|edge| edge.assertion_id().as_str().to_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(first_observation, second_observation);
 }

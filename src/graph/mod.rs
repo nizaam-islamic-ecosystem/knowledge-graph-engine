@@ -1,9 +1,11 @@
-//! Phase 2 graph module boundary.
+//! Graph module boundary for structural storage and Phase 6 bounded traversal.
 //!
-//! The graph layer provides structural nodes and edges, a minimal in-memory
-//! graph with adjacency, and one-step canonical/inverse traversal views.
-//! Full query traversal, path execution, filtering, ranking, and persistence
-//! remain later-phase responsibilities.
+//! The graph layer stores structural nodes and edges and exposes deterministic
+//! adjacency. Phase 2 provides one-step canonical/inverse traversal views.
+//! Phase 6 adds path values and explicitly bounded multi-hop traversal.
+//!
+//! The graph layer still does not own query planning, filtering, ranking,
+//! persistence, semantic relationship storage, or reasoning.
 
 mod edge;
 mod model;
@@ -14,7 +16,10 @@ mod traversal;
 pub use edge::{GraphEdge, GraphEdgeError, GraphEdgeId};
 pub use model::{Graph, GraphError};
 pub use node::{GraphNode, GraphNodeId};
-pub use traversal::{TraversalDirection, TraversalError, TraversalStep, traverse};
+pub use path::{PathError, TraversalPath};
+pub use traversal::{
+    TraversalBounds, TraversalDirection, TraversalError, TraversalStep, traverse, traverse_bounded,
+};
 
 #[cfg(test)]
 mod tests {

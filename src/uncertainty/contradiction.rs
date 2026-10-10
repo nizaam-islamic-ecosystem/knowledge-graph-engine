@@ -12,6 +12,7 @@ use crate::assertion::{
     Qualifiers,
 };
 use crate::identity::{ContradictionId, EvidenceId, KnowledgeAssertionId};
+use crate::temporal::{Interval, IntervalBoundary, TemporalValidity, TemporalValue};
 
 /// Structural kind of a contradiction.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -283,13 +284,28 @@ impl ContradictionSet {
     }
 
     /// Inserts a contradiction while rejecting duplicate record identities.
-    pub fn insert(&mut self, contradiction: Contradiction) -> Result<bool, ContradictionError> {
+    pub fn insert(&mut self, contradiction: Contradiction) -> Result<(), ContradictionError> {
         let id = contradiction.id().clone();
         if self.values.contains_key(&id) {
             return Err(ContradictionError::DuplicateIdentity);
         }
         self.values.insert(id, contradiction);
-        Ok(true)
+        Ok(())
+    }
+
+    /// Updates the review status of a stored contradiction without replacing
+    /// its record or identity. Returns an error when the identity is unknown.
+    pub fn update_status(
+        &mut self,
+        id: &ContradictionId,
+        status: ContradictionStatus,
+    ) -> Result<(), ContradictionError> {
+        let contradiction = self
+            .values
+            .get_mut(id)
+            .ok_or(ContradictionError::ContradictionNotFound)?;
+        contradiction.status = status;
+        Ok(())
     }
 
     /// Returns a contradiction by identity.
@@ -369,6 +385,7 @@ pub fn detect_contradiction(
         || left.predicate() != right.predicate()
         || left.context() != right.context()
         || left.qualifiers() != right.qualifiers()
+        || valid_times_definitely_disjoint(left.validity(), right.validity())
     {
         return None;
     }
@@ -394,6 +411,73 @@ pub fn detect_contradiction(
     })
 }
 
+/// Returns true only when the supplied valid-time metadata proves that two
+/// temporal values cannot overlap. Missing, unknown, and approximate values are
+/// deliberately conservative: they do not suppress a possible contradiction.
+fn valid_times_definitely_disjoint(
+    left: Option<TemporalValidity>,
+    right: Option<TemporalValidity>,
+) -> bool {
+    let (Some(left), Some(right)) = (left, right) else {
+        return false;
+    };
+
+    match (left.value(), right.value()) {
+        (TemporalValue::Instant(left), TemporalValue::Instant(right)) => left != right,
+        (TemporalValue::Instant(instant), TemporalValue::Interval(interval)) => {
+            interval.contains(instant) == Some(false)
+        }
+        (TemporalValue::Instant(instant), TemporalValue::OpenEnded(interval)) => {
+            interval.interval().contains(instant) == Some(false)
+        }
+        (TemporalValue::Interval(interval), TemporalValue::Instant(instant)) => {
+            interval.contains(instant) == Some(false)
+        }
+        (TemporalValue::OpenEnded(interval), TemporalValue::Instant(instant)) => {
+            interval.interval().contains(instant) == Some(false)
+        }
+        (TemporalValue::Interval(left), TemporalValue::Interval(right)) => {
+            intervals_definitely_disjoint(left, right)
+        }
+        (TemporalValue::Interval(left), TemporalValue::OpenEnded(right)) => {
+            intervals_definitely_disjoint(left, *right.interval())
+        }
+        (TemporalValue::OpenEnded(left), TemporalValue::Interval(right)) => {
+            intervals_definitely_disjoint(*left.interval(), right)
+        }
+        (TemporalValue::OpenEnded(left), TemporalValue::OpenEnded(right)) => {
+            intervals_definitely_disjoint(*left.interval(), *right.interval())
+        }
+        // Approximate and unknown times cannot prove disjointness.
+        _ => false,
+    }
+}
+
+fn intervals_definitely_disjoint(left: Interval, right: Interval) -> bool {
+    upper_boundary_precedes_lower(left.end(), right.start())
+        || upper_boundary_precedes_lower(right.end(), left.start())
+}
+
+/// Returns true when the interval's upper bound is certainly before the
+/// other's lower bound, including equal endpoints where either side is
+/// exclusive. Unknown/open bounds cannot prove separation in this direction.
+fn upper_boundary_precedes_lower(
+    upper_boundary: &IntervalBoundary,
+    lower_boundary: &IntervalBoundary,
+) -> bool {
+    match (upper_boundary.instant(), lower_boundary.instant()) {
+        (Some(upper), Some(lower)) => match upper.cmp(&lower) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => {
+                !matches!(upper_boundary, IntervalBoundary::Inclusive(_))
+                    || !matches!(lower_boundary, IntervalBoundary::Inclusive(_))
+            }
+        },
+        _ => false,
+    }
+}
+
 /// Structural errors while representing or collecting contradiction records.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ContradictionError {
@@ -401,6 +485,8 @@ pub enum ContradictionError {
     RequiresTwoDistinctAssertions,
     /// A contradiction ID is already present in the set.
     DuplicateIdentity,
+    /// No contradiction record exists for the requested identity.
+    ContradictionNotFound,
     /// A required label is empty or whitespace-only.
     EmptyLabel { field: &'static str },
     /// A label contains a Unicode control character.
@@ -415,6 +501,9 @@ impl fmt::Display for ContradictionError {
             }
             Self::DuplicateIdentity => {
                 formatter.write_str("contradiction identity is already registered")
+            }
+            Self::ContradictionNotFound => {
+                formatter.write_str("contradiction identity was not found")
             }
             Self::EmptyLabel { field } => write!(formatter, "{field} must not be empty"),
             Self::ControlCharacter { field, index } => {
@@ -598,18 +687,29 @@ mod tests {
     }
 
     #[test]
-    fn dismissing_a_finding_does_not_erase_the_record_or_assertions() {
+    fn stored_conflict_can_be_dismissed_without_replacing_its_identity_or_record() {
         let first = assertion("name-a", AssertionPolarity::Positive);
         let second = assertion("name-a", AssertionPolarity::Negative);
         let conflict = detect_contradiction(&first, &second, &BTreeSet::new())
             .unwrap()
             .into_contradiction(contradiction_id("conflict-dismissed"))
-            .unwrap()
-            .with_status(ContradictionStatus::Dismissed);
+            .unwrap();
+        let id = conflict.id().clone();
         let mut conflicts = ContradictionSet::new();
-        conflicts.insert(conflict).unwrap();
+        assert_eq!(conflicts.insert(conflict), Ok(()));
         let assertions = [first.clone(), second.clone()];
 
+        assert!(conflicts.has_active_conflict(first.id()));
+        assert_eq!(
+            conflicts.update_status(&id, ContradictionStatus::Dismissed),
+            Ok(())
+        );
+
+        let stored = conflicts
+            .get(&id)
+            .expect("stored conflict remains available");
+        assert_eq!(stored.id(), &id);
+        assert_eq!(stored.status(), ContradictionStatus::Dismissed);
         assert_eq!(conflicts.len(), 1);
         assert!(!conflicts.has_active_conflict(first.id()));
         assert_eq!(
@@ -619,5 +719,85 @@ mod tests {
             2
         );
         assert_eq!(conflicts.for_assertion(first.id()).len(), 1);
+    }
+
+    #[test]
+    fn updating_an_unknown_contradiction_returns_an_error() {
+        let mut conflicts = ContradictionSet::new();
+        assert_eq!(
+            conflicts.update_status(
+                &contradiction_id("missing-conflict"),
+                ContradictionStatus::Dismissed,
+            ),
+            Err(ContradictionError::ContradictionNotFound)
+        );
+    }
+
+    #[test]
+    fn disjoint_valid_time_periods_do_not_create_a_false_functional_conflict() {
+        use crate::temporal::{Instant, Interval, IntervalBoundary, TemporalValidity};
+
+        let first = assertion("office-holder-a", AssertionPolarity::Positive).with_validity(
+            TemporalValidity::during(
+                Interval::new(
+                    IntervalBoundary::Inclusive(Instant::from_unix_seconds(10)),
+                    IntervalBoundary::Exclusive(Instant::from_unix_seconds(20)),
+                )
+                .unwrap(),
+            ),
+        );
+        let second = assertion("office-holder-b", AssertionPolarity::Positive).with_validity(
+            TemporalValidity::during(
+                Interval::new(
+                    IntervalBoundary::Inclusive(Instant::from_unix_seconds(20)),
+                    IntervalBoundary::Inclusive(Instant::from_unix_seconds(30)),
+                )
+                .unwrap(),
+            ),
+        );
+        let functional = BTreeSet::from([AssertionPredicate::new("has-name").unwrap()]);
+
+        assert!(detect_contradiction(&first, &second, &functional).is_none());
+    }
+
+    #[test]
+    fn touching_inclusive_intervals_can_overlap_at_the_shared_instant() {
+        use crate::temporal::{Instant, Interval, IntervalBoundary, TemporalValidity};
+
+        let first = assertion("office-holder-a", AssertionPolarity::Positive).with_validity(
+            TemporalValidity::during(
+                Interval::new(
+                    IntervalBoundary::Inclusive(Instant::from_unix_seconds(10)),
+                    IntervalBoundary::Inclusive(Instant::from_unix_seconds(20)),
+                )
+                .unwrap(),
+            ),
+        );
+        let second = assertion("office-holder-b", AssertionPolarity::Positive).with_validity(
+            TemporalValidity::during(
+                Interval::new(
+                    IntervalBoundary::Inclusive(Instant::from_unix_seconds(20)),
+                    IntervalBoundary::Inclusive(Instant::from_unix_seconds(30)),
+                )
+                .unwrap(),
+            ),
+        );
+        let functional = BTreeSet::from([AssertionPredicate::new("has-name").unwrap()]);
+
+        assert!(detect_contradiction(&first, &second, &functional).is_some());
+    }
+
+    #[test]
+    fn unknown_or_approximate_valid_times_do_not_suppress_detection() {
+        use crate::temporal::{Approximate, Instant, TemporalValidity};
+
+        let first = assertion("office-holder-a", AssertionPolarity::Positive)
+            .with_validity(TemporalValidity::unknown());
+        let second = assertion("office-holder-b", AssertionPolarity::Positive).with_validity(
+            TemporalValidity::approximately(Approximate::new(Instant::from_unix_seconds(100))),
+        );
+        let functional = BTreeSet::from([AssertionPredicate::new("has-name").unwrap()]);
+
+        assert!(detect_contradiction(&first, &second, &functional).is_some());
     }
 }

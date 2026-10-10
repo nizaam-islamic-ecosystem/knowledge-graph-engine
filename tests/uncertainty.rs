@@ -154,7 +154,9 @@ fn contradiction_detection_is_conservative_and_keeps_conflicting_assertions_insp
         .expect("finding converts to a contradiction record")
         .with_status(ContradictionStatus::UnderReview);
     let mut conflicts = ContradictionSet::new();
-    assert!(conflicts.insert(contradiction.clone()).unwrap());
+    conflicts
+        .insert(contradiction.clone())
+        .expect("first contradiction insertion should succeed");
     assert!(
         conflicts.insert(contradiction).is_err(),
         "duplicate contradiction identity must be rejected"

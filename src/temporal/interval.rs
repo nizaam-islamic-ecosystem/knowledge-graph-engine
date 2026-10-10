@@ -56,10 +56,19 @@ impl Instant {
 
 impl fmt::Display for Instant {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Convert the normalized (floor-seconds, positive-nanoseconds) pair
+        // into the actual signed Unix timestamp before formatting it as a
+        // decimal. For example, (-1, 500_000_000) means -0.5, not -1.5.
+        let total_nanoseconds =
+            i128::from(self.unix_seconds) * 1_000_000_000 + i128::from(self.nanoseconds);
+        let sign = if total_nanoseconds < 0 { "-" } else { "" };
+        let magnitude = total_nanoseconds.abs();
+        let whole_seconds = magnitude / 1_000_000_000;
+        let fractional_nanoseconds = magnitude % 1_000_000_000;
+
         write!(
             formatter,
-            "unix:{}.{:09}",
-            self.unix_seconds, self.nanoseconds
+            "unix:{sign}{whole_seconds}.{fractional_nanoseconds:09}"
         )
     }
 }
@@ -398,6 +407,26 @@ mod tests {
         let instant = Instant::new(12, 345_000_000).expect("valid timestamp fraction");
         assert_eq!(instant.unix_seconds(), 12);
         assert_eq!(instant.nanoseconds(), 345_000_000);
+    }
+
+    #[test]
+    fn instant_display_formats_negative_fractional_timestamps_correctly() {
+        assert_eq!(
+            Instant::new(-1, 500_000_000).unwrap().to_string(),
+            "unix:-0.500000000"
+        );
+        assert_eq!(
+            Instant::new(-2, 500_000_000).unwrap().to_string(),
+            "unix:-1.500000000"
+        );
+        assert_eq!(
+            Instant::new(-1, 0).unwrap().to_string(),
+            "unix:-1.000000000"
+        );
+        assert_eq!(
+            Instant::new(0, 500_000_000).unwrap().to_string(),
+            "unix:0.500000000"
+        );
     }
 
     #[test]

@@ -3,13 +3,11 @@
 //! This module owns `KnowledgeAssertion`, its canonical semantic identity,
 //! structural validation, and identity-based equality.
 //!
-//! The assertion model deliberately stops at Phase 2:
-//! - no ontology validation;
-//! - no domain/range validation;
-//! - no evidence/provenance/authority system;
-//! - no reasoning;
-//! - no persistence;
-//! - no graph traversal.
+//! Phase 2 defines the canonical proposition and its identity. Phase 4 adds
+//! structural metadata for current epistemic status, valid time, and authority
+//! without making that metadata part of canonical assertion identity. Evidence
+//! support, provenance, and contradiction remain explicit typed relationships
+//! in their respective modules.
 //!
 //! `KnowledgeAssertionId` remains the identity type established by the KG
 //! identity boundary. Canonical construction delegates to the deterministic
@@ -22,7 +20,9 @@ use crate::assertion::object::AssertionObject;
 use crate::assertion::predicate::AssertionPredicate;
 use crate::assertion::qualifier::Qualifiers;
 use crate::assertion::status::AssertionStatus;
+use crate::authority::{Authority, AuthorityTarget};
 use crate::identity::KnowledgeAssertionId;
+use crate::temporal::TemporalValidity;
 
 /// Semantic polarity of a knowledge assertion.
 ///
@@ -66,6 +66,14 @@ pub enum KnowledgeAssertionValidationError {
         /// The identity that canonical construction requires.
         expected: KnowledgeAssertionId,
     },
+    /// Attached authority metadata targets a different semantic object.
+    AuthorityTargetMismatch {
+        /// The authority target required by this assertion.
+        expected: AuthorityTarget,
+
+        /// The target declared by the attached authority metadata.
+        actual: AuthorityTarget,
+    },
 }
 
 impl fmt::Display for KnowledgeAssertionValidationError {
@@ -74,6 +82,10 @@ impl fmt::Display for KnowledgeAssertionValidationError {
             Self::NonCanonicalIdentity { actual, expected } => write!(
                 formatter,
                 "knowledge assertion identity is not canonical: actual={actual}, expected={expected}",
+            ),
+            Self::AuthorityTargetMismatch { expected, actual } => write!(
+                formatter,
+                "knowledge assertion authority target does not match: expected={expected:?}, actual={actual:?}",
             ),
         }
     }
@@ -94,9 +106,9 @@ impl std::error::Error for KnowledgeAssertionValidationError {}
 /// polarity
 /// ```
 ///
-/// Epistemic status is intentionally excluded from semantic identity because
-/// status represents the current epistemic state of an assertion rather than
-/// the proposition itself.
+/// Epistemic status, temporal validity, and authority metadata are intentionally
+/// excluded from semantic identity: they describe the current assessment or
+/// applicability of the proposition rather than the proposition itself.
 #[derive(Clone, Debug, Eq)]
 pub struct KnowledgeAssertion {
     id: KnowledgeAssertionId,
@@ -107,6 +119,8 @@ pub struct KnowledgeAssertion {
     qualifiers: Qualifiers,
     status: AssertionStatus,
     polarity: AssertionPolarity,
+    validity: Option<TemporalValidity>,
+    authority: Option<Authority>,
 }
 
 impl KnowledgeAssertion {
@@ -146,6 +160,8 @@ impl KnowledgeAssertion {
             qualifiers,
             status,
             polarity,
+            validity: None,
+            authority: None,
         }
     }
 
@@ -197,6 +213,70 @@ impl KnowledgeAssertion {
         self.polarity
     }
 
+    /// Returns the current valid-time qualification, if one is recorded.
+    ///
+    /// Valid time describes when the assertion applies, not when the KG
+    /// recorded or changed it. System-time history belongs to provenance.
+    #[must_use]
+    pub const fn validity(&self) -> Option<TemporalValidity> {
+        self.validity
+    }
+
+    /// Returns authority metadata attached to this canonical assertion.
+    #[must_use]
+    pub fn authority(&self) -> Option<&Authority> {
+        self.authority.as_ref()
+    }
+
+    /// Returns a new assertion value with an updated current epistemic status.
+    ///
+    /// Status is deliberately excluded from assertion identity.
+    #[must_use]
+    pub fn with_status(mut self, status: AssertionStatus) -> Self {
+        self.status = status;
+        self
+    }
+
+    /// Returns a new assertion value with the supplied valid-time metadata.
+    #[must_use]
+    pub fn with_validity(mut self, validity: TemporalValidity) -> Self {
+        self.validity = Some(validity);
+        self
+    }
+
+    /// Returns a new assertion value without valid-time metadata.
+    #[must_use]
+    pub fn without_validity(mut self) -> Self {
+        self.validity = None;
+        self
+    }
+
+    /// Attaches authority metadata whose target must be this assertion's
+    /// canonical identity. The metadata does not participate in that identity.
+    pub fn with_authority(
+        mut self,
+        authority: Authority,
+    ) -> Result<Self, KnowledgeAssertionValidationError> {
+        let expected = AuthorityTarget::Assertion(self.id.clone());
+        let actual = authority.target().clone();
+        if actual != expected {
+            return Err(KnowledgeAssertionValidationError::AuthorityTargetMismatch {
+                expected,
+                actual,
+            });
+        }
+
+        self.authority = Some(authority);
+        Ok(self)
+    }
+
+    /// Returns a new assertion value without attached authority metadata.
+    #[must_use]
+    pub fn without_authority(mut self) -> Self {
+        self.authority = None;
+        self
+    }
+
     /// Validates the assertion's structural identity.
     ///
     /// The semantic components are typed and validated by their respective
@@ -210,6 +290,17 @@ impl KnowledgeAssertion {
                 actual: self.id.clone(),
                 expected,
             });
+        }
+
+        if let Some(authority) = &self.authority {
+            let expected = AuthorityTarget::Assertion(self.id.clone());
+            let actual = authority.target().clone();
+            if actual != expected {
+                return Err(KnowledgeAssertionValidationError::AuthorityTargetMismatch {
+                    expected,
+                    actual,
+                });
+            }
         }
 
         Ok(())

@@ -1,16 +1,16 @@
-//! Phase 2 knowledge-assertion module.
+//! Canonical knowledge-assertion module with Phase 4 metadata integration.
 //!
-//! This module is the public assertion boundary for the Knowledge Graph.
-//! It exposes the semantic assertion model and its supporting context,
-//! typed references, predicates, qualifiers, and epistemic status.
+//! This module exposes the assertion's typed proposition, canonical identity,
+//! context, qualifiers, polarity, and shared epistemic status. Phase 4 adds
+//! target-checked authority metadata and valid-time qualification without
+//! changing canonical assertion identity.
 //!
 //! The assertion module intentionally does not define a separate subject
 //! abstraction. `AssertionObject` is used for both assertion subjects and
-//! objects.
-//!
-//! Full ontology validation, evidence, provenance, authority, reasoning,
-//! graph traversal, persistence, and other later-phase concerns remain
-//! outside this module.
+//! objects. Evidence support, provenance, and contradiction remain explicit
+//! typed associations in their owning modules rather than untyped assertion
+//! metadata. Ontology-wide validation, reasoning, traversal, persistence, and
+//! query execution remain outside this module.
 
 mod context;
 mod model;
@@ -211,5 +211,61 @@ mod tests {
         );
 
         assert!(assertion.validate().is_ok());
+    }
+
+    #[test]
+    fn phase4_metadata_does_not_change_canonical_assertion_identity() {
+        use crate::authority::{Authority, AuthorityDimension, AuthorityTarget, AuthorityValue};
+        use crate::temporal::{Instant, TemporalValidity};
+
+        let base = KnowledgeAssertion::new(
+            AssertionObject::Entity(EntityId::new("entity-phase4").unwrap()),
+            AssertionPredicate::new("has-name").unwrap(),
+            AssertionObject::Concept(ConceptId::new("concept-phase4").unwrap()),
+            AssertionContext::new(),
+            Qualifiers::new(),
+            AssertionStatus::Provisional,
+            AssertionPolarity::Positive,
+        );
+        let canonical_id = base.id().clone();
+        let authority = Authority::new(AuthorityTarget::Assertion(canonical_id.clone()))
+            .with_dimension(AuthorityDimension::Authentication(
+                AuthorityValue::new("reviewed").unwrap(),
+            ))
+            .unwrap();
+        let enriched = base
+            .with_status(AssertionStatus::Known)
+            .with_validity(TemporalValidity::at(Instant::from_unix_seconds(
+                1_750_000_000,
+            )))
+            .with_authority(authority)
+            .expect("authority target matches canonical assertion identity");
+
+        assert_eq!(enriched.id(), &canonical_id);
+        assert_eq!(enriched.status(), AssertionStatus::Known);
+        assert!(enriched.validity().is_some());
+        assert!(enriched.authority().is_some());
+        assert!(enriched.validate().is_ok());
+    }
+
+    #[test]
+    fn assertion_rejects_authority_metadata_for_another_target() {
+        use crate::authority::{Authority, AuthorityTarget};
+        use crate::identity::SourceId;
+
+        let assertion = KnowledgeAssertion::new(
+            AssertionObject::Entity(EntityId::new("entity-target-check").unwrap()),
+            AssertionPredicate::new("related-to").unwrap(),
+            AssertionObject::Concept(ConceptId::new("concept-target-check").unwrap()),
+            AssertionContext::new(),
+            Qualifiers::new(),
+            AssertionStatus::Provisional,
+            AssertionPolarity::Positive,
+        );
+        let authority = Authority::new(AuthorityTarget::Source(
+            SourceId::new("not-this-assertion").unwrap(),
+        ));
+
+        assert!(assertion.with_authority(authority).is_err());
     }
 }

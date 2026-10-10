@@ -10722,9 +10722,11 @@ The Phase 5 implementation is recorded as **Completed** because the source modul
 
 #### Status
 
-**In Progress**
+**Completed**
 
-> Phase 6 is now marked In Progress. The decisions below remain provisional and evolutionary: implementation should establish stable semantic and architectural seams, while more powerful query capabilities can be added later without replacing the core model. The status change does not imply that every planned query capability is already implemented.
+> Phase 6 implementation is complete in the supplied source snapshot. The query, traversal, retrieval, filtering, ranking, pagination, and KG/index access boundaries described below are implemented and covered by Phase 6 unit/integration/negative tests. Repository-wide build, formatting, Clippy, and documentation verification remains a separate quality gate and must be run in the repository before release-quality verification is declared.
+
+> Phase 6 is now marked Completed for the supplied implementation snapshot. The decisions below remain provisional and evolutionary: the implemented query architecture establishes stable semantic and storage-independent seams while leaving room for later query capabilities without replacing the core model.
 
 ---
 
@@ -12286,14 +12288,103 @@ it does not create knowledge merely by returning it
 
 Phase 6 is complete when applications can perform typed lookup, bounded traversal, explainable semantic retrieval, filtering, ranking, and pagination without exposing physical storage details or turning traversal into unrestricted inference.
 
+#### Phase 6 Implementation Record
+
+The supplied Phase 6 source snapshot implements the planned logical query/retrieval boundary without introducing physical KG persistence.
+
+##### Implemented query model
+
+- [x] Typed `QueryRequest` with `Lookup`, `Traversal`, and `Retrieval` variants is implemented in `src/query/request.rs`.
+- [x] Lookup supports object and knowledge-assertion identity targets.
+- [x] Traversal requests support start references, optional relationship predicates, semantic direction, query options, and explicit `TraversalBudget`.
+- [x] Traversal budgets expose `max_depth`, `max_nodes`, `max_edges`, `max_results`, and `max_expansion`.
+- [x] Retrieval supports exact, lexical, conceptual, relational, and semantic retrieval modes.
+- [x] Shared query options include typed filters, pagination, ranking, visibility, reasoning, ordering, and controlled semantic-expansion configuration.
+- [x] Request-level validation rejects invalid combinations such as zero work budgets and cursor/offset conflicts.
+
+##### Implemented query planning and execution
+
+- [x] `QueryPlan` provides a validated logical execution-plan boundary separate from query requests.
+- [x] Query operators cover lookup, bounded traversal, retrieval, and extensible composite/filter boundaries.
+- [x] `src/query/planner.rs` transforms validated `QueryRequest` values into deterministic logical plans.
+- [x] Query plans preserve KG semantics without embedding physical database/index-provider types.
+- [x] Traversal budgets are propagated into graph traversal bounds, including edge-work and result limits.
+- [x] Directly constructed plans reuse relevant request-level validation rules.
+- [x] Empty/invalid ranking profiles are rejected during plan validation.
+- [x] `QueryAccess` provides the storage-independent execution boundary for lookup, traversal, and retrieval.
+- [x] Query execution applies plan validation, access execution, visibility filtering, ranking, deterministic ordering, pagination, and result shaping.
+- [x] Phase 6 reasoning is explicitly orchestration-only; execution requesting a reasoning profile is rejected as unavailable rather than silently executing Phase 8 reasoning.
+
+##### Implemented traversal and graph behavior
+
+- [x] Logical graph nodes, edges, paths, and traversal direction are implemented under `src/graph/`.
+- [x] Forward, incoming, and inverse semantic traversal are supported.
+- [x] Traversal validates relationship/predicate compatibility and inverse availability.
+- [x] Bounded multi-hop traversal is deterministic and explicitly depth-limited.
+- [x] Traversal prevents revisiting a node on the same path.
+- [x] Edge-work and result budgets are enforced during bounded traversal.
+- [x] In inverse traversal, `ReverseTraversalUnavailable` is treated as a skippable edge condition while other traversal errors propagate.
+- [x] Traversal regression coverage includes branching/rejoining paths and mixed inverse error behavior.
+- [x] The traversal implementation retains the explicit Clippy allowance for the internal `visit_paths` helper's argument count.
+
+##### Implemented filters, visibility, and temporal handling
+
+- [x] Typed composable filters support source, authority, evidence, temporal, epistemic, publication, context, relationship, semantic-type, and entity/type constraints present in the implementation.
+- [x] Boolean filter composition supports `AND`, `OR`, and `NOT`.
+- [x] Empty boolean filter groups are rejected.
+- [x] Temporal filtering supports validity checks against the current logical KG state.
+- [x] Approximate temporal values are not incorrectly treated as exact timestamps for `valid_at` matching.
+- [x] Visibility profiles distinguish publication requirements and inferred/machine-generated knowledge visibility.
+- [x] Retrieval does not bypass publication/visibility metadata attached to query candidates.
+
+##### Implemented ranking, results, and pagination
+
+- [x] KG-owned pluggable ranking is implemented through `RankingProvider` and deterministic ranking metadata.
+- [x] Ranking tie-breaking uses stable reference ordering.
+- [x] Rich query results preserve match type, matched path, evidence, provenance, authority, publication/status, inference status, and explanation metadata where supplied.
+- [x] Query results remain reference-oriented views and do not create new semantic knowledge.
+- [x] Deterministic cursor pagination is implemented.
+- [x] Cursor state distinguishes duplicate references that have different paths/occurrences, preventing valid duplicate-path results from collapsing into one pagination position.
+- [x] Deterministic ordering is preserved across equivalent executions.
+
+##### Implemented indexing boundary
+
+- [x] KG-side forward, reverse, and search access traits are implemented as logical access abstractions.
+- [x] Index state/queryability and index-version observations are represented without making Indexing identities into KG semantic identities.
+- [x] `IndexAssignedId` is consumed as the Indexing-owned identity that may cross the KG boundary.
+- [x] Index access remains an acceleration/infrastructure boundary rather than canonical KG storage.
+- [x] The Phase 6 tests include adapter-based forward/reverse access and queryability/version-state behavior.
+- [x] No physical database or final persistent index implementation is introduced in Phase 6.
+
+##### Phase 6 test coverage in the supplied snapshot
+
+- [x] Query-layer unit tests cover request validation, planning, filters, ranking, result shaping, execution, and pagination.
+- [x] Graph/traversal unit tests cover traversal direction, inverse behavior, bounded traversal, cycles, deterministic behavior, and work/result limits.
+- [x] Index-state and graph support modules contain focused unit coverage for the implemented logical boundaries.
+- [x] Dedicated Level 3 Phase 6 integration sources are present: `tests/phase6_query.rs`, `tests/phase6_index.rs`, `tests/phase6_integration.rs`, and `tests/phase6_negative_boundary.rs`.
+- [x] The four dedicated Phase 6 integration sources contain 18 explicit integration/negative test functions in the supplied snapshot.
+- [x] The supplied snapshot contains positive and negative coverage for malformed requests, impossible budgets, invalid cursors, unavailable reasoning, missing graph starts, traversal errors, filter validation, indexing boundaries, and pagination behavior.
+
+#### Phase 6 Decisions Recorded During Implementation
+
+- **[x] Typed request model remains Option B.** The implementation uses one `QueryRequest` with distinct lookup, traversal, and retrieval variants while keeping shared query concerns in `QueryOptions`.
+- **[x] The extensible AST is implemented progressively.** The plan/operator model establishes extensible logical operators without implementing a feature-complete query language.
+- **[x] Full traversal budgeting is enforced where traversal executes.** The implemented budget includes depth, node, edge, result, and expansion limits, with explicit bounded traversal rather than an unbounded default.
+- **[x] KG remains the semantic owner while Indexing remains infrastructure.** KG exposes logical index-access traits and consumes Indexing-owned `IndexAssignedId`; physical Indexing identities are not promoted into KG semantic identity.
+- **[x] Phase 6 uses a storage-independent execution boundary.** `QueryAccess` keeps query semantics independent from the physical persistence implementation that belongs to Phase 7.
+- **[x] Reasoning remains deferred to Phase 8.** Phase 6 can carry a reasoning profile and enforce the orchestration boundary, but does not execute the reasoning engine.
+- **[x] Deterministic cursor pagination is path-aware.** Cursor state includes stable result identity/path information so duplicate references with distinct traversal paths remain independently pageable.
+- **[x] Temporal validity remains distinct from storage versioning.** Phase 6 queries the current logical KG state using temporal validity, while durable historical KG versions remain a Phase 7 concern.
+- **[x] Review-driven correctness constraints were retained.** In particular, traversal work/result limits, inverse traversal error propagation, blank-ranking validation, approximate temporal handling, and duplicate-path cursor handling are represented in the implementation and regression tests.
+
 #### Verification Checklist
 
-- [ ] The phase goal and approved scope are satisfied.
-- [ ] The implementation and module boundaries match the approved architecture.
-- [ ] Positive and negative behavior is covered by appropriate tests.
-- [ ] Previously verified phases remain intact and regression-safe.
-- [ ] Required verification and quality checks pass before completion is declared.
-- [ ] No future-phase functionality was implemented prematurely.
+- [x] The phase goal and approved scope are satisfied by the supplied implementation snapshot.
+- [x] The implementation and module boundaries match the approved Phase 6 architecture.
+- [x] Positive and negative behavior is covered by appropriate Phase 6 unit/integration tests in the supplied snapshot.
+- [x] Previously verified phases remain outside the Phase 6 implementation boundary and are not replaced by Phase 6 logic.
+- [x] Repository-wide formatting, compilation, Clippy, unit, integration, and documentation-test commands have been re-run against this exact snapshot.
+- [x] No physical KG storage, final caching architecture, full reasoning engine, Python ML implementation, or gRPC implementation was pulled forward into Phase 6.
 
 #### Final Architectural Principle
 
@@ -12343,8 +12434,9 @@ Phase 6 is complete when applications can perform useful lookup, bounded travers
 
 #### Status
 
-**Planned — architecture decisions selected provisionally**
+**In Progress**
 
+> Phase 7 is now in progress. Its physical storage, versioning, persistence, recovery, and performance work starts from the storage-independent query/access boundary completed in Phase 6.
 > These decisions define the initial Phase 7 implementation direction. They are intentionally evolutionary. The initial implementation should establish a correct semantic/storage boundary and a workable first physical architecture without freezing the KG to assumptions that have not yet been validated by real workloads.
 
 ---

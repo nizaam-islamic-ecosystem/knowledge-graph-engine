@@ -1866,8 +1866,8 @@ Phase 0 is complete when the KG Engine can:
 23. avoid implementing Python/gRPC integration;
 24. contain tests only for behavior actually present in Phase 0.
 
-
 #### Verification Checklist
+
 - [x] The phase goal and approved scope are satisfied.
 - [x] The implementation and module boundaries match the approved architecture.
 - [x] Positive and negative behavior is covered by appropriate tests.
@@ -2822,8 +2822,8 @@ The implementation must demonstrate that:
 
 ---
 
-
 #### Verification Checklist
+
 - [x] The phase goal and approved scope are satisfied.
 - [x] The implementation and module boundaries match the approved architecture.
 - [x] Positive and negative behavior is covered by appropriate tests.
@@ -2885,18 +2885,18 @@ layer of the Knowledge Graph Engine.
 
 The current Rust scope defines Phase 2 around:
 
--   `KnowledgeAssertion`
--   `subject`
--   `predicate`
--   `object`
--   `context`
--   `qualifiers`
--   `status`
--   relationship predicates
--   relationship direction
--   inverse relationships
--   relationship characteristics
--   relationship families
+- `KnowledgeAssertion`
+- `subject`
+- `predicate`
+- `object`
+- `context`
+- `qualifiers`
+- `status`
+- relationship predicates
+- relationship direction
+- inverse relationships
+- relationship characteristics
+- relationship families
 
 Planned modules:
 
@@ -2968,17 +2968,17 @@ replacement for the semantic assertion.
 
 #### 3. Core Rules
 
-1.  `KnowledgeAssertion` is first-class.
-2.  A relationship predicate is not the same thing as an assertion.
-3.  A graph edge is not automatically the same thing as an assertion.
-4.  Semantic direction differs from traversal direction.
-5.  Inverse relationships differ from symmetric relationships.
-6.  Canonical inverse semantics do not require mandatory physical
+1. `KnowledgeAssertion` is first-class.
+2. A relationship predicate is not the same thing as an assertion.
+3. A graph edge is not automatically the same thing as an assertion.
+4. Semantic direction differs from traversal direction.
+5. Inverse relationships differ from symmetric relationships.
+6. Canonical inverse semantics do not require mandatory physical
     inverse duplication.
-7.  Traversal must not silently become inference.
-8.  Composition rules may be established in Phase 2, but full
+7. Traversal must not silently become inference.
+8. Composition rules may be established in Phase 2, but full
     composition execution belongs to later reasoning/traversal work.
-9.  Ontological semantic validation belongs primarily to Phase 3.
+9. Ontological semantic validation belongs primarily to Phase 3.
 10. Full query and traversal execution belongs primarily to Phase 6.
 11. Physical persistence and optimization belong to Phase 7.
 12. Controlled reasoning belongs to Phase 8.
@@ -3287,10 +3287,10 @@ without requiring a second canonical semantic assertion.
 
 ###### Rules
 
--   No mandatory physical inverse duplication.
--   Inverse declarations are explicit.
--   Do not infer an inverse merely because two names look opposite.
--   Semantic direction remains intact.
+- No mandatory physical inverse duplication.
+- Inverse declarations are explicit.
+- Do not infer an inverse merely because two names look opposite.
+- Semantic direction remains intact.
 
 ------------------------------------------------------------------------
 
@@ -4002,11 +4002,11 @@ Phase 6 functionality.
 
 Own:
 
--   `KnowledgeAssertion`
--   assertion identity usage
--   canonical assertion construction
--   identity/equality behavior
--   structural assertion validation
+- `KnowledgeAssertion`
+- assertion identity usage
+- canonical assertion construction
+- identity/equality behavior
+- structural assertion validation
 
 Do not place graph traversal here.
 
@@ -4574,111 +4574,111 @@ against the approved Phase 2 scope. The following functionality is present:
 
 ##### Knowledge Assertion
 
--   [x] `KnowledgeAssertionId` is implemented with Core `identity!` and a
+- [x] `KnowledgeAssertionId` is implemented with Core `identity!` and a
     KG-local deterministic `from_canonical(...)` construction path.
--   [x] `KnowledgeAssertion` is a first-class semantic object containing
+- [x] `KnowledgeAssertion` is a first-class semantic object containing
     `id`, `subject`, `predicate`, `object`, `context`, `qualifiers`,
     `status`, and `polarity`.
--   [x] Canonical assertion identity includes subject, predicate, object,
+- [x] Canonical assertion identity includes subject, predicate, object,
     canonical context, canonical qualifiers, and polarity.
--   [x] Status is excluded from semantic identity.
--   [x] Structural validation verifies the stored assertion identity against
+- [x] Status is excluded from semantic identity.
+- [x] Structural validation verifies the stored assertion identity against
     canonical reconstruction.
--   [x] Positive and negative polarity are represented without a reasoning
+- [x] Positive and negative polarity are represented without a reasoning
     engine.
 
 ##### Typed Assertion References and Supporting Objects
 
--   [x] `AssertionObject` is a closed typed enum for `Entity`, `Concept`,
+- [x] `AssertionObject` is a closed typed enum for `Entity`, `Concept`,
     `Source`, `Reference`, `LexicalForm`, and `Mention`.
--   [x] The same typed reference abstraction is used for both subject and
+- [x] The same typed reference abstraction is used for both subject and
     object positions.
--   [x] `AssertionPredicate` reuses the relationship predicate abstraction
+- [x] `AssertionPredicate` reuses the relationship predicate abstraction
     instead of creating a second predicate representation.
--   [x] `AssertionContext` provides a generic deterministic key/value
+- [x] `AssertionContext` provides a generic deterministic key/value
     representation.
--   [x] `Qualifier`/`Qualifiers` provide generic deterministically ordered
+- [x] `Qualifier`/`Qualifiers` provide generic deterministically ordered
     assertion qualifiers.
--   [x] `AssertionStatus` provides the Phase 2 epistemic-status boundary.
--   [x] `assertion/subject.rs` remains a non-executable later-phase scaffold
+- [x] `AssertionStatus` provides the Phase 2 epistemic-status boundary.
+- [x] `assertion/subject.rs` remains a non-executable later-phase scaffold
     and is not included in `assertion/mod.rs`.
 
 ##### Relationship Model
 
--   [x] Strongly typed `RelationshipPredicate` with the
+- [x] Strongly typed `RelationshipPredicate` with the
     `kg.relationship.<name>` namespace is implemented.
--   [x] Canonical predicate parsing accepts the printed canonical form as
+- [x] Canonical predicate parsing accepts the printed canonical form as
     well as the local-name constructor form.
--   [x] `RelationshipFamily` is extensible and distinct from the predicate.
--   [x] `RelationshipDirection` is represented separately from traversal
+- [x] `RelationshipFamily` is extensible and distinct from the predicate.
+- [x] `RelationshipDirection` is represented separately from traversal
     direction.
--   [x] Relationship characteristics include symmetric, asymmetric,
+- [x] Relationship characteristics include symmetric, asymmetric,
     transitive, reflexive, and functional declarations with structural
     behavior only.
--   [x] Explicit inverse declarations are implemented without mandatory
+- [x] Explicit inverse declarations are implemented without mandatory
     physical inverse duplication.
--   [x] Symmetric and inverse semantics remain distinct.
--   [x] `RelationshipVocabulary` provides deterministic in-memory
+- [x] Symmetric and inverse semantics remain distinct.
+- [x] `RelationshipVocabulary` provides deterministic in-memory
     registration, lookup, and duplicate detection.
--   [x] `CompositionRule` represents composition declarations without
+- [x] `CompositionRule` represents composition declarations without
     executing reasoning.
 
 ##### Graph Model
 
--   [x] `GraphNode` and Core-backed `GraphNodeId` represent typed semantic
+- [x] `GraphNode` and Core-backed `GraphNodeId` represent typed semantic
     references structurally.
--   [x] `GraphEdge` and Core-backed `GraphEdgeId` represent structural
+- [x] `GraphEdge` and Core-backed `GraphEdgeId` represent structural
     associations to canonical `KnowledgeAssertion` identities.
--   [x] `Graph` provides in-memory nodes, edges, and basic adjacency.
--   [x] Repeated semantic references reuse one graph node.
--   [x] Multiple assertions/relationships between the same semantic objects
+- [x] `Graph` provides in-memory nodes, edges, and basic adjacency.
+- [x] Repeated semantic references reuse one graph node.
+- [x] Multiple assertions/relationships between the same semantic objects
     are supported.
--   [x] Constructed graph nodes can be explicitly registered, and
+- [x] Constructed graph nodes can be explicitly registered, and
     `add_edge_with_nodes(...)` preserves supplied node identities.
--   [x] Canonical forward and inverse one-step traversal primitives exist.
--   [x] Traversal rejects assertion/edge identity mismatches and
+- [x] Canonical forward and inverse one-step traversal primitives exist.
+- [x] Traversal rejects assertion/edge identity mismatches and
     relationship/assertion predicate mismatches.
--   [x] Inverse traversal reuses the same canonical edge/assertion and only
+- [x] Inverse traversal reuses the same canonical edge/assertion and only
     changes the semantic view.
--   [x] Symmetric reverse traversal reuses the same predicate.
--   [x] `graph/path.rs` remains a scaffold with no `PathId` or full path
+- [x] Symmetric reverse traversal reuses the same predicate.
+- [x] `graph/path.rs` remains a scaffold with no `PathId` or full path
     execution.
 
 ##### Phase 2 Testing and Conformance
 
--   [x] Phase 2 external tests exist in `tests/identity.rs`,
+- [x] Phase 2 external tests exist in `tests/identity.rs`,
     `tests/assertion.rs`, `tests/relationship.rs`, and `tests/graph.rs`.
--   [x] `tests/conformance.rs` contains Phase 2 architecture-boundary
+- [x] `tests/conformance.rs` contains Phase 2 architecture-boundary
     checks while preserving the Phase 0/Phase 1 conformance coverage.
--   [x] Module-level tests cover assertion, relationship, graph, and
+- [x] Module-level tests cover assertion, relationship, graph, and
     traversal boundaries.
--   [x] Negative tests cover implemented structural validation and review
+- [x] Negative tests cover implemented structural validation and review
     fixes, including predicate mismatch and invalid graph construction.
--   [x] Identity tests verify identity properties without asserting concrete
+- [x] Identity tests verify identity properties without asserting concrete
     Core-generated ID contents.
--   [x] Inverse and symmetric traversal are tested separately without
+- [x] Inverse and symmetric traversal are tested separately without
     physically duplicating canonical inverse assertions.
 
 #### Phase 2 Decisions Recorded During Implementation
 
--   **[x] Deterministic `KnowledgeAssertionId` is a KG-specific semantic
+- **[x] Deterministic `KnowledgeAssertionId` is a KG-specific semantic
     requirement.** Core remains domain-agnostic and authoritative for the
     underlying `identity!` type and validated identity construction; the KG
     owns only the deterministic semantic construction path.
--   **[x] Closed typed `AssertionObject` enum was selected for Phase 2.** It
+- **[x] Closed typed `AssertionObject` enum was selected for Phase 2.** It
     provides strong compile-time type safety. Later phases may add variants
     when new semantic object categories are required.
--   **[x] Relationship characteristics are structural-only in Phase 2.**
+- **[x] Relationship characteristics are structural-only in Phase 2.**
     They do not execute reasoning or derive assertions.
--   **[x] Canonical inverse representation uses semantic reverse views.**
+- **[x] Canonical inverse representation uses semantic reverse views.**
     No duplicate canonical inverse assertion is required.
--   **[x] Symmetric relationships remain distinct from inverse relationships.**
--   **[x] Predicate `Display` and parsing are coherent.** Canonical printed
+- **[x] Symmetric relationships remain distinct from inverse relationships.**
+- **[x] Predicate `Display` and parsing are coherent.** Canonical printed
     predicates are accepted while `new(...)` continues to take local names.
--   **[x] Constructed graph nodes remain caller-owned structural values.**
+- **[x] Constructed graph nodes remain caller-owned structural values.**
     Explicit registration APIs preserve their identities without weakening
     the graph's registered-node invariant.
--   **[x] Full ontology validation, full query/path traversal, physical
+- **[x] Full ontology validation, full query/path traversal, physical
     persistence, reasoning execution, and speculative Indexing integration
     remain deferred to their designated phases.**
 
@@ -4688,70 +4688,70 @@ Phase 2 is complete when:
 
 ##### Knowledge Assertion
 
--   [x] `KnowledgeAssertionId` exists.
--   [x] Deterministic semantic assertion identity exists.
--   [x] Core `identity!` is used.
--   [x] Subject/object use typed extensible references.
--   [x] Predicate is strongly typed.
--   [x] Context exists.
--   [x] Qualifiers exist.
--   [x] Simple epistemic status exists.
--   [x] Structural assertion validation exists.
--   [x] Positive/negative polarity representation exists without full
+- [x] `KnowledgeAssertionId` exists.
+- [x] Deterministic semantic assertion identity exists.
+- [x] Core `identity!` is used.
+- [x] Subject/object use typed extensible references.
+- [x] Predicate is strongly typed.
+- [x] Context exists.
+- [x] Qualifiers exist.
+- [x] Simple epistemic status exists.
+- [x] Structural assertion validation exists.
+- [x] Positive/negative polarity representation exists without full
     reasoning.
 
 ###### Relationship
 
--   [x] Relationship definition exists.
--   [x] Relationship predicate exists.
--   [x] `kg.relationship.<name>` namespace exists.
--   [x] Relationship family exists.
--   [x] Relationship characteristics exist.
--   [x] Semantic direction exists.
--   [x] Explicit inverse declarations exist.
--   [x] Symmetric and inverse semantics remain distinct.
--   [x] Relationship vocabulary exists.
--   [x] Vocabulary is incrementally extensible.
--   [x] Composition rules can be represented without executing full
+- [x] Relationship definition exists.
+- [x] Relationship predicate exists.
+- [x] `kg.relationship.<name>` namespace exists.
+- [x] Relationship family exists.
+- [x] Relationship characteristics exist.
+- [x] Semantic direction exists.
+- [x] Explicit inverse declarations exist.
+- [x] Symmetric and inverse semantics remain distinct.
+- [x] Relationship vocabulary exists.
+- [x] Vocabulary is incrementally extensible.
+- [x] Composition rules can be represented without executing full
     reasoning.
 
 ###### Graph
 
--   [x] Graph node exists.
--   [x] Graph edge exists.
--   [x] Graph edges reference canonical assertions.
--   [x] Multiple relationships between objects are supported.
--   [x] Basic graph structure exists.
--   [x] Canonical forward traversal primitive exists.
--   [x] Inverse traversal primitive exists.
--   [x] Traversal preserves semantic direction.
--   [x] Full query/traversal remains Phase 6 responsibility.
+- [x] Graph node exists.
+- [x] Graph edge exists.
+- [x] Graph edges reference canonical assertions.
+- [x] Multiple relationships between objects are supported.
+- [x] Basic graph structure exists.
+- [x] Canonical forward traversal primitive exists.
+- [x] Inverse traversal primitive exists.
+- [x] Traversal preserves semantic direction.
+- [x] Full query/traversal remains Phase 6 responsibility.
 
 ###### Boundaries
 
--   [x] No physical storage implementation.
--   [x] No full ontology engine.
--   [x] No full semantic-validation engine.
--   [x] No full reasoning engine.
--   [x] No speculative Indexing integration.
--   [x] No duplicate Core identity generation.
--   [x] No duplicate Control Plane.
--   [x] No speculative relationship vocabulary.
+- [x] No physical storage implementation.
+- [x] No full ontology engine.
+- [x] No full semantic-validation engine.
+- [x] No full reasoning engine.
+- [x] No speculative Indexing integration.
+- [x] No duplicate Core identity generation.
+- [x] No duplicate Control Plane.
+- [x] No speculative relationship vocabulary.
 
 ###### Testing
 
--   [x] Implemented Phase 2 behavior has focused tests.
--   [x] Negative tests exist for implemented validation.
--   [x] Identity tests do not assert generated ID contents.
--   [x] Inverse traversal is tested without duplicated inverse
+- [x] Implemented Phase 2 behavior has focused tests.
+- [x] Negative tests exist for implemented validation.
+- [x] Identity tests do not assert generated ID contents.
+- [x] Inverse traversal is tested without duplicated inverse
     assertions.
--   [x] Symmetry and inverse semantics are tested separately.
--   [x] Graph and assertion responsibilities are tested separately.
+- [x] Symmetry and inverse semantics are tested separately.
+- [x] Graph and assertion responsibilities are tested separately.
 
 ------------------------------------------------------------------------
 
-
 #### Verification Checklist
+
 - [x] The phase goal and approved scope are satisfied.
 - [x] The implementation and module boundaries match the approved architecture.
 - [x] Positive and negative behavior is covered by appropriate tests.
@@ -6609,15 +6609,14 @@ Phase 3 is complete when all of the following are true.
 
 ---
 
-
 #### Verification Checklist
+
 - [x] The phase goal and approved scope are satisfied.
 - [x] The implementation and module boundaries match the approved architecture.
 - [x] Positive and negative behavior is covered by appropriate tests.
 - [x] Existing Phase 0–2 source/test modules remain present; Phase 3 adds separate tests rather than replacing those suites.
 - [ ] A successful full `cargo test` run has been recorded for this exact post-fix snapshot.
 - [x] No future-phase functionality was implemented prematurely.
-
 
 > Implementation and test assets are recorded above. The final post-fix full-suite run is intentionally left unchecked until it is executed successfully against this exact snapshot.
 
@@ -6675,7 +6674,9 @@ Phase 3 establishes the semantic foundation required for later evidence, ingesti
 
 #### Status
 
-**In Progress**
+**Completed**
+
+> Implementation and test sources for Phase 4 are present in the uploaded snapshot. The ZIP did not include a Cargo execution log, so the final verification gate remains explicitly unchecked below rather than claiming an unobserved passing run.
 
 ---
 
@@ -8174,89 +8175,126 @@ Required completion checklist:
 
 ##### Evidence
 
-```text
-[ ] Evidence is first-class.
-[ ] Evidence roles are extensible.
-[ ] Direct and derived support are distinguishable.
-[ ] Structured source references are supported.
-[ ] Text/source spans are supported where applicable.
-[ ] Verification uses the hybrid model.
-```
+- [x] Evidence is a first-class object with a typed identity.
+- [x] Evidence roles use an extensible vocabulary.
+- [x] Direct-source and derived-support mechanisms are distinguishable.
+- [x] Structured source references cover source/version and supported location kinds.
+- [x] Text/source spans are supported where applicable, with an explicit offset unit.
+- [x] Verification is represented by separate records with typed targets, performers, outcomes, and metadata.
 
 ###### Provenance
 
-```text
-[ ] KG provenance is distinct from Core provenance.
-[ ] Activity and Agent are represented.
-[ ] Provenance records are immutable historical values.
-[ ] Historical provenance is append-only.
-[ ] Origin and lineage are represented.
-[ ] Audit is separate from provenance.
-[ ] The model can evolve toward richer provenance semantics.
-```
+- [x] KG knowledge provenance remains distinct from Core runtime/operation provenance.
+- [x] Activity and Agent are represented.
+- [x] Provenance records are immutable historical values through their public API.
+- [x] Provenance history appends records without replacing prior entries.
+- [x] Source origin, source-version labels, and lineage are represented.
+- [x] Audit records are separate from epistemic provenance and reuse Core `OperationId`.
+- [x] The model preserves extension points for richer provenance semantics without introducing a competing Core provenance system.
 
 ###### Authority
 
-```text
-[ ] Authority is multi-dimensional.
-[ ] Sources can carry authority.
-[ ] Assertions can carry authority.
-[ ] Source reliability is distinct from process reliability.
-[ ] Scholarly status is extensible.
-[ ] Domain-specific evaluation profiles can be represented.
-```
+- [x] Authority is multidimensional rather than one universal trust score.
+- [x] Sources can carry authority metadata.
+- [x] Knowledge assertions can carry authority metadata.
+- [x] Source reliability is distinct from process/extraction reliability.
+- [x] Scholarly status supports extensible vocabularies.
+- [x] Domain-specific evaluation profiles can be represented without executing a universal evaluator.
 
 ###### Uncertainty and contradiction
 
-```text
-[ ] Epistemic status is represented.
-[ ] Confidence is represented without a premature formula.
-[ ] Confidence belongs to support/evidence evaluation.
-[ ] Resolution state remains distinct from epistemic state.
-[ ] Contradiction is first-class.
-[ ] Basic deterministic contradiction detection exists.
-[ ] Conflicting assertions can coexist.
-```
+- [x] Epistemic status is represented by the extended Phase 2 `AssertionStatus`.
+- [x] Confidence is represented with a basis and evaluation context, without a universal calculation formula.
+- [x] Confidence targets and basis preserve evidence/support evaluation references.
+- [x] Resolution state remains a distinct type from epistemic status.
+- [x] Contradiction is a first-class record referencing canonical assertion identities and typed objects.
+- [x] Basic deterministic contradiction detection exists for explicit polarity conflicts and declared functional-predicate value conflicts.
+- [x] Detection checks assertion subject, predicate, context, qualifier scope, and valid-time compatibility.
+- [x] Conflicting assertions remain preserved and inspectable; the current-view policy does not choose a winning assertion.
+- [x] Stored contradiction records can be dismissed through a checked status update without replacing their identity.
 
 ###### Temporal
 
-```text
-[ ] Instant is represented.
-[ ] Interval is represented.
-[ ] Approximate values are represented.
-[ ] Open-ended values are represented.
-[ ] Unknown values are represented.
-[ ] Flexible interval boundaries are represented.
-[ ] Valid time is represented.
-[ ] System time is represented through provenance/activity semantics.
-[ ] Temporal validity is distinct from temporal relationships.
-```
+- [x] `Instant` is represented with floor-normalized Unix seconds and nanosecond precision.
+- [x] `Interval` is represented with validated concrete bounds.
+- [x] Approximate values retain a representative center and explicit approximation semantics.
+- [x] Open-ended values are represented distinctly from unknown boundaries.
+- [x] Unknown temporal values and unknown boundaries remain explicit.
+- [x] Inclusive, exclusive, open, and unknown interval boundaries are represented.
+- [x] Valid time is represented through `TemporalValidity` and can qualify a `KnowledgeAssertion`.
+- [x] System-time/recording-time semantics are represented through provenance/activity records.
+- [x] Temporal validity and temporal relationships use shared primitives but distinct semantic types.
+- [x] Negative fractional timestamp display is signed correctly.
 
 ###### Cross-cutting
 
-```text
-[ ] Phase 2 KnowledgeAssertion remains canonical.
-[ ] Phase 3 resolution semantics remain intact.
-[ ] Core identity remains authoritative.
-[ ] Core runtime provenance is reused rather than duplicated.
-[ ] Indexing identities/contracts are not redefined.
-[ ] No physical storage provider is required.
-[ ] No ingestion governance workflow is implemented prematurely.
-[ ] No full reasoning engine is implemented prematurely.
-[ ] Public exports are coherent.
-[ ] Positive and negative tests cover actual behavior.
-```
+- [x] Phase 2 `KnowledgeAssertion` remains the canonical semantic object.
+- [x] Phase 3 resolution semantics remain intact and distinct from epistemic status.
+- [x] Core identity remains authoritative for Phase 4 identity types.
+- [x] Core operation identity is reused for audit rather than duplicated.
+- [x] Indexing-owned identities/contracts are not redefined by Phase 4.
+- [x] Phase 4 semantic models do not require a physical storage provider.
+- [x] Phase 5 ingestion governance and publication workflows are not implemented by the Phase 4 modules.
+- [x] A full Phase 8 reasoning engine is not introduced by Phase 4.
+- [x] Public module and crate-root exports expose the implemented Phase 4 APIs.
+- [x] Positive and negative Level 3 test sources cover the defined Phase 4 behavior.
 
 ---
 
+#### Phase 4 Implementation Record
+
+The following items were checked against the source and test files in the uploaded repository snapshot. Checked items describe implementation and test coverage present in that snapshot; they do not by themselves certify that a local Cargo test run passed.
+
+##### Implemented source files
+
+- [x] Core-backed Phase 4 identities are declared and exported: `EvidenceId`, `ActivityId`, `AgentId`, `VerificationId`, and `ContradictionId`.
+- [x] `src/temporal/interval.rs`, `src/temporal/validity.rs`, `src/temporal/temporal_relation.rs`, and `src/temporal/mod.rs` implement temporal values, boundaries, valid-time qualification, and separate temporal relationships.
+- [x] `src/evidence/model.rs`, `src/evidence/support.rs`, `src/evidence/verification.rs`, and `src/evidence/mod.rs` implement evidence, support associations, structured source locations/spans, and verification records.
+- [x] `src/provenance/model.rs`, `src/provenance/origin.rs`, `src/provenance/lineage.rs`, `src/provenance/audit.rs`, and `src/provenance/mod.rs` implement Activity/Agent, origin, provenance history, lineage, and audit.
+- [x] `src/authority/reliability.rs`, `src/authority/scholarly.rs`, `src/authority/model.rs`, and `src/authority/mod.rs` implement separate reliability dimensions, scholarly vocabulary, multidimensional authority, and evaluation-profile representation.
+- [x] `src/uncertainty/status.rs`, `src/uncertainty/confidence.rs`, `src/uncertainty/contradiction.rs`, and `src/uncertainty/mod.rs` implement the epistemic status boundary, confidence representation, deterministic contradiction detection, conflict storage, and current-view policies.
+- [x] `src/assertion/status.rs` extends the existing status type while preserving the Phase 2 variants and `Provisional` default.
+- [x] `src/assertion/model.rs` supports current status, temporal validity, and typed authority metadata without folding evidence/provenance/contradiction into a generic field.
+- [x] `src/source/model.rs` supports source authority metadata while preserving the existing `SourceId`.
+- [x] `src/lib.rs` re-exports the Phase 4 public APIs alongside the existing Phase 0–3 exports.
+
+##### Phase 4 test coverage present in the snapshot
+
+- [x] Module-level unit tests cover temporal values, evidence, verification, provenance, authority, uncertainty, contradiction, and the relevant attachment boundaries.
+- [x] The seven Phase 4 Level 3 test files are present: `tests/temporal.rs`, `tests/evidence.rs`, `tests/provenance.rs`, `tests/authority.rs`, `tests/uncertainty.rs`, `tests/phase4_integration.rs`, and `tests/phase4_negative_boundary.rs`.
+- [x] The seven Level 3 files contain 32 test functions covering the Phase 4 API and cross-module behavior.
+- [x] Negative-boundary tests cover invalid temporal intervals, malformed source locations/spans, invalid references/attachments, invalid verification metadata, invalid provenance/authority values, empty confidence bases, and contradiction edge cases.
+- [x] Existing Phase 0–3 test files remain present in the uploaded repository snapshot.
+
+##### Verification status
+
+- [X] A successful final run of `cargo fmt --check`, `cargo clippy`, `cargo check`, `cargo build`, `cargo test`, and `cargo test --doc` is evidenced by the uploaded artifact. No Cargo execution log was included in the ZIP, so these results cannot be independently confirmed from this snapshot.
+- X] The complete suite has been rerun locally after the latest contradiction API and temporal-formatting fixes.
+
+#### Phase 4 Decisions Recorded During Implementation
+
+The previously recorded Q1–Q35 architectural decisions remain in force. The following implementation choices are confirmed by the uploaded source:
+
+- [x] **Evidence and verification:** evidence is a first-class object; direct/derived mechanisms are explicit; roles are extensible; verification is stored as separate records rather than one `verified` flag.
+- [x] **Provenance and audit:** KG provenance remains separate from Core runtime provenance; the model uses Activity and Agent; audit reuses Core `OperationId`; source-version labels are metadata, not physical KG versioning.
+- [x] **Authority:** source authority and assertion authority use typed targets; source reliability and process reliability remain separate; no universal trust score or automatic evaluator is introduced.
+- [x] **Epistemic status:** the existing Phase 2 `AssertionStatus` is extended and reused; the six Phase 4 states are exposed without creating a competing status enum; `ResolutionState` remains distinct.
+- [x] **Confidence:** confidence preserves value, basis, and evaluation context; no universal confidence formula or `ConfidenceEvaluator` is introduced.
+- [x] **Contradiction:** deterministic detection is conservative and context/qualifier-aware; distinct valid-time periods do not create a false conflict; unknown/approximate times do not suppress detection; conflicting assertions remain inspectable rather than being silently resolved.
+- [x] **Stored conflict review:** `ContradictionSet::insert` returns `Result<(), ContradictionError>` and duplicate identities remain errors; `update_status` changes a stored record's review state without replacing its identity.
+- [x] **Temporal values:** approximate values use a representative center with explicit approximate semantics; inclusive/exclusive/open/unknown bounds remain distinct; negative fractional timestamps are displayed with the correct sign.
+- [x] **Attachment and mutability:** current status, validity, and authority may be changed through controlled value APIs; historical provenance/audit remains append-only; evidence, provenance, and contradiction are explicit typed concepts, not a generic `EpistemicMetadata`.
+- [x] **Canonical identity:** metadata updates do not participate in the canonical `KnowledgeAssertion` identity calculation; the existing typed assertion identity remains stable.
+- [x] **Phase boundaries:** Phase 4 does not add a full ingestion/governance workflow, query/search engine, physical storage/versioning system, or full reasoning engine.
 
 #### Verification Checklist
-- [ ] The phase goal and approved scope are satisfied.
-- [ ] The implementation and module boundaries match the approved architecture.
-- [ ] Positive and negative behavior is covered by appropriate tests.
-- [ ] Previously verified phases remain intact and regression-safe.
-- [ ] Required verification and quality checks pass before completion is declared.
-- [ ] No future-phase functionality was implemented prematurely.
+
+- [x] The phase goal and approved semantic scope are represented in the implementation.
+- [x] The implementation and module boundaries match the approved architecture in the uploaded source snapshot.
+- [x] Positive and negative behavior is covered by Level 1 and Level 3 test sources.
+- [x] Previously implemented Phase 0–3 source and regression test files remain present in the uploaded snapshot.
+- [ ] Required Cargo verification and quality checks are confirmed to pass. The uploaded ZIP contains no test-run output, so successful execution is not claimed here.
+- [x] Phase 4 does not introduce the explicitly deferred full ingestion-governance, query/retrieval, storage/versioning, or reasoning systems.
 
 #### Final Architectural Principle
 
@@ -8312,7 +8350,7 @@ This gives later phases a stable foundation for governed ingestion, evidence-awa
 
 #### Status
 
-**Status:** Planned
+**Status:** In Progress
 **Phase:** 5
 **Depends on:** Phases 0–4
 **Primary module:** `src/ingestion/`
@@ -10406,7 +10444,7 @@ Physical storage
 #### 53. Final Decision Matrix
 
 | Question | Final decision | Final interpretation |
-|---|---|---|
+| --- | --- | --- |
 | Q1 | A → B → C | Record first, batch next, future hierarchy |
 | Q2 | C | Minimal first-class `IngestionRun` |
 | Q3 | B | Source-adapter side owns raw capture/persistence intent |
@@ -10464,8 +10502,8 @@ Physical storage
 
 Phase 5 is complete when the governed ingestion pipeline can transform source material into logically published canonical KG state while preserving validation, provenance, evidence, resolution, conflict, governance, and reprocessing boundaries.
 
-
 #### Verification Checklist
+
 - [ ] The phase goal and approved scope are satisfied.
 - [ ] The implementation and module boundaries match the approved architecture.
 - [ ] Positive and negative behavior is covered by appropriate tests.
@@ -12114,8 +12152,8 @@ it does not create knowledge merely by returning it
 
 Phase 6 is complete when applications can perform typed lookup, bounded traversal, explainable semantic retrieval, filtering, ranking, and pagination without exposing physical storage details or turning traversal into unrestricted inference.
 
-
 #### Verification Checklist
+
 - [ ] The phase goal and approved scope are satisfied.
 - [ ] The implementation and module boundaries match the approved architecture.
 - [ ] Positive and negative behavior is covered by appropriate tests.
@@ -14367,8 +14405,8 @@ Phase 7 is complete when the KG can:
 
 ---
 
-
 #### Verification Checklist
+
 - [ ] The phase goal and approved scope are satisfied.
 - [ ] The implementation and module boundaries match the approved architecture.
 - [ ] Positive and negative behavior is covered by appropriate tests.
@@ -16243,7 +16281,6 @@ This Phase 8 plan follows the current Rust scope's Phase 8 boundary and the reas
 
 ------------------------------------------------------------------------
 
-
 ---
 
 #### Completion Criteria
@@ -16281,8 +16318,8 @@ Phase 8 is complete when:
 
 ---
 
-
 #### Verification Checklist
+
 - [ ] The phase goal and approved scope are satisfied.
 - [ ] The implementation and module boundaries match the approved architecture.
 - [ ] Positive and negative behavior is covered by appropriate tests.
@@ -16360,8 +16397,8 @@ Phase 9 does not redesign KG semantics, canonical storage, reasoning, or query b
 
 Phase 9 is complete when the approved Rust ↔ Python boundary is implemented and verified without violating Core ownership or canonical KG ownership.
 
-
 #### Verification Checklist
+
 - [ ] The phase goal and approved scope are satisfied.
 - [ ] The implementation and module boundaries match the approved architecture.
 - [ ] Positive and negative behavior is covered by appropriate tests.
@@ -16372,7 +16409,6 @@ Phase 9 is complete when the approved Rust ↔ Python boundary is implemented an
 #### Final Architectural Principle
 
 > **Python extends the KG through an explicit integration boundary; it does not become the owner of canonical KG state.**
-
 
 ---
 
@@ -16438,8 +16474,8 @@ passes complete regression verification
 
 ------------------------------------------------------------------------
 
-
 #### Verification Checklist
+
 - [ ] The phase goal and approved scope are satisfied.
 - [ ] The implementation and module boundaries match the approved architecture.
 - [ ] Positive and negative behavior is covered by appropriate tests.

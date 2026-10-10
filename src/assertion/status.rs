@@ -1,27 +1,39 @@
 //! Epistemic status for knowledge assertions.
 //!
-//! Phase 2 intentionally provides only a small epistemic-status vocabulary.
-//! This is not a truth engine, authority system, evidence system, provenance
-//! system, or reasoning engine.
+//! The original Phase 2 variants remain available for source compatibility.
+//! Phase 4 extends this same type with an explicit epistemic vocabulary rather
+//! than introducing a competing assertion-status enum. Resolution state is a
+//! separate concept owned by the Phase 3 entity-resolution module.
 
 use core::fmt;
 
-/// Minimal Phase 2 epistemic status of a knowledge assertion.
+/// Status of a canonical knowledge assertion.
+///
+/// `Provisional`, `Accepted`, and `Rejected` retain the initial Phase 2 status
+/// vocabulary. Phase 4 also uses this type for the explicit epistemic states
+/// `Known`, `Unknown`, `Uncertain`, `Ambiguous`, `Disputed`, and `Conflicting`.
+/// Existing variants are retained and their textual representations are stable.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Default)]
 pub enum AssertionStatus {
-    /// The assertion has been introduced but has not reached an accepted
-    /// epistemic state.
+    /// The assertion has been introduced but has not reached an accepted state.
     #[default]
     Provisional,
-
-    /// The assertion is currently accepted by the semantic model.
+    /// The assertion is accepted by the current semantic model.
     Accepted,
-
-    /// The assertion is currently contested.
+    /// The assertion's epistemic status is disputed.
     Disputed,
-
-    /// The assertion has been rejected.
+    /// The assertion has been rejected by the current semantic model.
     Rejected,
+    /// The assertion is treated as known within its declared context.
+    Known,
+    /// The relevant knowledge is explicitly unknown.
+    Unknown,
+    /// The available support does not justify a determinate conclusion.
+    Uncertain,
+    /// More than one plausible interpretation or value remains.
+    Ambiguous,
+    /// The assertion participates in an explicit unresolved conflict.
+    Conflicting,
 }
 
 impl AssertionStatus {
@@ -33,6 +45,11 @@ impl AssertionStatus {
             Self::Accepted => "accepted",
             Self::Disputed => "disputed",
             Self::Rejected => "rejected",
+            Self::Known => "known",
+            Self::Unknown => "unknown",
+            Self::Uncertain => "uncertain",
+            Self::Ambiguous => "ambiguous",
+            Self::Conflicting => "conflicting",
         }
     }
 }
@@ -48,7 +65,7 @@ mod tests {
     use super::AssertionStatus;
 
     #[test]
-    fn status_values_have_stable_representations() {
+    fn phase2_status_representations_remain_stable() {
         assert_eq!(AssertionStatus::Provisional.as_str(), "provisional");
         assert_eq!(AssertionStatus::Accepted.as_str(), "accepted");
         assert_eq!(AssertionStatus::Disputed.as_str(), "disputed");
@@ -56,19 +73,42 @@ mod tests {
     }
 
     #[test]
-    fn provisional_is_the_default_status() {
+    fn phase4_epistemic_states_have_stable_representations() {
+        assert_eq!(AssertionStatus::Known.as_str(), "known");
+        assert_eq!(AssertionStatus::Unknown.as_str(), "unknown");
+        assert_eq!(AssertionStatus::Uncertain.as_str(), "uncertain");
+        assert_eq!(AssertionStatus::Ambiguous.as_str(), "ambiguous");
+        assert_eq!(AssertionStatus::Disputed.as_str(), "disputed");
+        assert_eq!(AssertionStatus::Conflicting.as_str(), "conflicting");
+    }
+
+    #[test]
+    fn provisional_remains_the_default_for_phase2_compatibility() {
         assert_eq!(AssertionStatus::default(), AssertionStatus::Provisional);
     }
 
     #[test]
-    fn statuses_remain_distinct() {
-        assert_ne!(AssertionStatus::Accepted, AssertionStatus::Disputed);
-
-        assert_ne!(AssertionStatus::Disputed, AssertionStatus::Rejected);
+    fn status_values_remain_distinct() {
+        let statuses = [
+            AssertionStatus::Provisional,
+            AssertionStatus::Accepted,
+            AssertionStatus::Disputed,
+            AssertionStatus::Rejected,
+            AssertionStatus::Known,
+            AssertionStatus::Unknown,
+            AssertionStatus::Uncertain,
+            AssertionStatus::Ambiguous,
+            AssertionStatus::Conflicting,
+        ];
+        let unique = statuses
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), 9);
     }
 
     #[test]
     fn display_matches_the_stable_representation() {
         assert_eq!(AssertionStatus::Accepted.to_string(), "accepted");
+        assert_eq!(AssertionStatus::Conflicting.to_string(), "conflicting");
     }
 }

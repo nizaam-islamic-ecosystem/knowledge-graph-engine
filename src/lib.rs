@@ -7,12 +7,11 @@
 //! scaffolded directories.
 //!
 //! The module declarations below intentionally include both implemented and
-//! future-phase modules. Declaring a module does not mean its future behavior is
-//! implemented or part of the current Phase 2 semantic contract.
+//! future-phase modules. Declaring a module does not mean that all behavior
+//! associated with that module is implemented or part of the current contract.
 //!
 //! The public `use`/re-export surface below exposes the currently established
-//! Phase 0 through Phase 3 contracts without recreating Core or Indexing
-//! types.
+//! Phase 0 through Phase 4 contracts without recreating Core or Indexing types.
 //!
 //! Core remains authoritative for universal runtime, lifecycle, request
 //! admission, execution context, cancellation, deadlines, capability dispatch,
@@ -56,11 +55,12 @@ pub mod versioning;
 // No Core runtime/registry/capability implementation is duplicated here.
 
 // -----------------------------------------------------------------------------
-// Phase 1 identity public surface
+// Phase 1 / Phase 4 identity public surface
 // -----------------------------------------------------------------------------
 
 pub use identity::{
-    ConceptId, EntityId, KnowledgeAssertionId, LexicalFormId, MentionId, ReferenceId, SourceId,
+    ActivityId, AgentId, ConceptId, ContradictionId, EntityId, EvidenceId, KnowledgeAssertionId,
+    LexicalFormId, MentionId, ReferenceId, SourceId, VerificationId,
 };
 
 // -----------------------------------------------------------------------------
@@ -76,10 +76,10 @@ pub use entity::{Alias, Entity, Mention, Name};
 pub use concept::Concept;
 
 // -----------------------------------------------------------------------------
-// Phase 1 source public surface
+// Phase 1 source model and Phase 4 authority integration
 // -----------------------------------------------------------------------------
 
-pub use source::{Reference, Source};
+pub use source::{Reference, Source, SourceError};
 
 // -----------------------------------------------------------------------------
 // Phase 1 lexical public surface
@@ -90,7 +90,7 @@ pub use source::{Reference, Source};
 // implementation boundary.
 
 // -----------------------------------------------------------------------------
-// Phase 2 assertion public surface
+// Phase 2 assertion model with Phase 4 metadata
 // -----------------------------------------------------------------------------
 
 pub use assertion::{
@@ -158,4 +158,56 @@ pub use resolution::{
     ResolutionError, ResolutionInput, ResolutionPolicy, ResolutionReference, ResolutionResult,
     ResolutionState, Resolver, decide, exact_match, generate_candidates, normalize,
     normalized_match, provisional, rank_candidates, rejected, transliteration_match,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 4 temporal public surface
+// -----------------------------------------------------------------------------
+
+pub use temporal::{
+    Approximate, Instant, Interval, IntervalBoundary, OpenEnded, OpenEndedDirection, TemporalError,
+    TemporalRelation, TemporalRelationship, TemporalValidity, TemporalValue,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 4 evidence and verification public surface
+// -----------------------------------------------------------------------------
+
+pub use evidence::{
+    Evidence, EvidenceMechanism, EvidenceRole, EvidenceRoleError, EvidenceSourceKind,
+    EvidenceSourceReference, EvidenceSourceReferenceError, EvidenceSupport, EvidenceSupportError,
+    EvidenceValidationError, TextOffsetUnit, TextSpan, TextSpanError, VerificationError,
+    VerificationOutcome, VerificationPerformer, VerificationRecord, VerificationTarget,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 4 knowledge provenance and audit public surface
+// -----------------------------------------------------------------------------
+
+pub use provenance::{
+    Activity, ActivityKind, Agent, AgentType, AuditAction, AuditError, AuditRecord, AuditTrail,
+    KnowledgeOrigin, KnowledgeOriginError, Lineage, LineageError, LineageKind, LineageLink,
+    ProvenanceError, ProvenanceHistory, ProvenanceRecord, ProvenanceTarget,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 4 authority public surface
+// -----------------------------------------------------------------------------
+
+pub use authority::{
+    Authority, AuthorityDimension, AuthorityError, AuthorityEvaluationProfile, AuthorityTarget,
+    AuthorityValue, ProcessReliability, ReliabilityAssessment, ReliabilityError, ScholarlyStatus,
+    ScholarlyStatusError, SourceReliability,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 4 uncertainty, confidence, and contradiction public surface
+// -----------------------------------------------------------------------------
+
+pub use uncertainty::{
+    ConfidenceAssessment, ConfidenceBasis, ConfidenceContext, ConfidenceError, ConfidenceLabel,
+    ConfidenceScore, ConfidenceTarget, ConfidenceValue, Contradiction, ContradictionError,
+    ContradictionFinding, ContradictionKind, ContradictionSet, ContradictionStatus,
+    CurrentViewPolicy, EPISTEMIC_STATES, EpistemicStatus, detect_contradiction,
+    is_phase4_epistemic_status,
 };

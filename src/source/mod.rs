@@ -1,15 +1,14 @@
-//! Foundational knowledge-graph source boundaries for Phase 1.
+//! Foundational source and reference boundaries with Phase 4 source authority.
 //!
-//! Phase 1 exposes only the minimal [`Source`] and generic [`Reference`]
-//! representations together with their strongly typed identities. Collection,
-//! document, and passage scaffolds remain deferred and are intentionally not
-//! wired into the Phase 1 public API.
+//! `Source` retains its Phase 1 strongly typed identity and identifying label;
+//! Phase 4 adds target-checked authority metadata. Generic references remain
+//! opaque, and collection, document, and passage scaffolds stay deferred.
 
 mod model;
 mod reference;
 
 pub use crate::identity::{ReferenceId, SourceId};
-pub use model::Source;
+pub use model::{Source, SourceError};
 pub use reference::Reference;
 
 #[cfg(test)]
@@ -54,5 +53,24 @@ mod tests {
         let source = Source::new(SourceId::generate(), "Minimal source");
 
         assert_eq!(source.label(), "Minimal source");
+    }
+
+    #[test]
+    fn public_source_boundary_exposes_target_checked_authority_metadata() {
+        use crate::authority::{Authority, AuthorityDimension, AuthorityTarget, AuthorityValue};
+
+        let id = SourceId::new("source-public-authority").expect("valid source identity");
+        let authority = Authority::new(AuthorityTarget::Source(id.clone()))
+            .with_dimension(AuthorityDimension::SourceAuthority(
+                AuthorityValue::new("curated").expect("valid authority value"),
+            ))
+            .expect("valid authority metadata");
+        let source = Source::new(id.clone(), "Curated source")
+            .with_authority(authority)
+            .expect("authority must point to this source");
+
+        assert_eq!(source.id(), &id);
+        assert!(source.authority().is_some());
+        assert!(source.validate().is_ok());
     }
 }

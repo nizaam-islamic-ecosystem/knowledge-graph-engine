@@ -367,7 +367,11 @@ impl CandidateState {
     pub const fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Blocked | Self::Rejected | Self::Withdrawn | Self::Synchronized
+            Self::Quarantined
+                | Self::Blocked
+                | Self::Rejected
+                | Self::Withdrawn
+                | Self::Synchronized
         )
     }
 }
@@ -684,6 +688,12 @@ impl IngestionRun {
             .candidates
             .get_mut(key)
             .ok_or_else(|| PipelineError::CandidateNotFound { key: key.clone() })?;
+        if progress.state.is_terminal() {
+            return Err(PipelineError::CandidateStageExecutionClosed {
+                key: key.clone(),
+                state: progress.state,
+            });
+        }
         let expected_index = progress
             .last_successful_step_index
             .map_or(0, |last_successful| last_successful + 1);
@@ -1038,16 +1048,10 @@ fn candidate_transition_allowed(from: CandidateState, to: CandidateState) -> boo
                 S::SemanticValidated,
                 S::AwaitingApproval | S::Quarantined | S::Blocked | S::Rejected
             )
-            | (
-                S::Quarantined,
-                S::Received
-                    | S::Normalized
-                    | S::Mapped
-                    | S::SemanticValidated
-                    | S::AwaitingApproval
-                    | S::Rejected
-                    | S::Blocked
-            )
+            // Quarantined candidates are terminal within this run. Reprocessing
+            // must use a new run so the stage cursor and decision history cannot
+            // become inconsistent.
+            | (S::Quarantined, S::Rejected | S::Blocked)
             | (
                 S::AwaitingApproval,
                 S::Approved | S::Rejected | S::Quarantined | S::Blocked
@@ -1105,6 +1109,11 @@ pub enum PipelineError {
         from: CandidateState,
         to: CandidateState,
     },
+    /// Candidate stage execution is closed because its state is terminal for this run.
+    CandidateStageExecutionClosed {
+        key: CandidateKey,
+        state: CandidateState,
+    },
     /// Candidate stage execution references a step absent from the frozen plan.
     UnplannedStage { name: String },
     /// A stage did not match the next expected step in the frozen plan.
@@ -1141,6 +1150,10 @@ impl fmt::Display for PipelineError {
             Self::InvalidRunTransition { from, to } => write!(formatter, "invalid ingestion run transition: {from:?} -> {to:?}"),
             Self::RunNotRunning { state } => write!(formatter, "ingestion operation requires a running run; current state is {state:?}"),
             Self::InvalidCandidateTransition { from, to } => write!(formatter, "invalid candidate transition: {from:?} -> {to:?}"),
+            Self::CandidateStageExecutionClosed { key, state } => write!(
+                formatter,
+                "candidate {key:?} cannot execute more stages in state {state:?}; reprocessing requires a new run",
+            ),
             Self::UnplannedStage { name } => write!(formatter, "stage {name} is not in the frozen pipeline plan"),
             Self::StageOrderMismatch { expected_step, actual_step } => write!(formatter, "pipeline stage order mismatch: expected {expected_step}, got {actual_step}"),
             Self::InvalidAttemptNumber => formatter.write_str("stage attempt numbers start at one"),
@@ -1390,6 +1403,62 @@ mod tests {
             ),
             Err(PipelineError::StageOrderMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn quarantined_or_terminal_candidates_cannot_resume_stage_execution_in_the_same_run() {
+        let pipeline = IngestionPipeline::phase5_default();
+        let candidate = mapped_candidate();
+        let key = candidate.key().clone();
+        let mut run = pipeline
+            .begin_run(
+                OperationId::new("nizaam.kg.ingestion.quarantine-stage-closed").unwrap(),
+                SourceId::new("source-pipeline").unwrap(),
+                SourceClass::structured_data(),
+                Some("snapshot-1".to_owned()),
+                Instant::from_unix_seconds(1),
+            )
+            .unwrap();
+        run.start().unwrap();
+        run.register_candidate(&candidate).unwrap();
+        run.transition_candidate(
+            &key,
+            CandidateState::Quarantined,
+            Instant::from_unix_seconds(2),
+            "recoverable finding requires a new run",
+        )
+        .unwrap();
+
+        assert!(run.candidate(&key).unwrap().state().is_terminal());
+        let first_step = run.plan().ordered_steps()[0].clone();
+        let execution = StageExecutionInput::new(
+            first_step,
+            1,
+            StageExecutionOutcome::Succeeded,
+            Instant::from_unix_seconds(3),
+            Instant::from_unix_seconds(4),
+            None,
+        );
+        assert!(matches!(
+            run.record_stage_execution(&key, execution),
+            Err(PipelineError::CandidateStageExecutionClosed {
+                state: CandidateState::Quarantined,
+                ..
+            })
+        ));
+        assert!(matches!(
+            run.transition_candidate(
+                &key,
+                CandidateState::Normalized,
+                Instant::from_unix_seconds(5),
+                "attempt same-run recovery",
+            ),
+            Err(PipelineError::InvalidCandidateTransition {
+                from: CandidateState::Quarantined,
+                to: CandidateState::Normalized,
+            })
+        ));
+        assert!(run.candidate(&key).unwrap().stage_executions().is_empty());
     }
 
     #[test]

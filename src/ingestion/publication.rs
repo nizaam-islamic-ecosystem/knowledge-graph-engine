@@ -7,12 +7,16 @@
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::assertion::{AssertionObject, KnowledgeAssertion, KnowledgeAssertionValidationError};
 use crate::concept::Concept;
 use crate::entity::{Entity, ExternalIdentifier, Mention};
 use crate::evidence::{Evidence, EvidenceSupport, EvidenceValidationError};
-use crate::identity::{AgentId, ConceptId, EntityId, EvidenceId, KnowledgeAssertionId};
+use crate::identity::{
+    AgentId, ConceptId, EntityId, EvidenceId, KnowledgeAssertionId, LexicalFormId, MentionId,
+    ReferenceId, SourceId,
+};
 use crate::provenance::ProvenanceRecord;
 use crate::resolution::ExternalIdentifierCrosswalk;
 use crate::source::{Reference, Source, SourceError};
@@ -49,8 +53,13 @@ pub struct CanonicalKnowledgeSubgraph {
     contradictions: Vec<Contradiction>,
     existing_entity_ids: BTreeSet<EntityId>,
     existing_concept_ids: BTreeSet<ConceptId>,
+    existing_mention_ids: BTreeSet<MentionId>,
+    existing_source_ids: BTreeSet<SourceId>,
+    existing_reference_ids: BTreeSet<ReferenceId>,
+    existing_lexical_form_ids: BTreeSet<LexicalFormId>,
     existing_assertion_ids: BTreeSet<KnowledgeAssertionId>,
     existing_evidence_ids: BTreeSet<EvidenceId>,
+    source_authenticity: BTreeMap<SourceId, SourceAuthenticity>,
 }
 
 impl CanonicalKnowledgeSubgraph {
@@ -191,6 +200,72 @@ impl CanonicalKnowledgeSubgraph {
     {
         self.existing_concept_ids.extend(ids);
         self
+    }
+
+    /// Declares mention identities already present in canonical state.
+    #[must_use]
+    pub fn with_existing_mention_ids<I>(mut self, ids: I) -> Self
+    where
+        I: IntoIterator<Item = MentionId>,
+    {
+        self.existing_mention_ids.extend(ids);
+        self
+    }
+
+    /// Declares source identities already present in canonical state.
+    #[must_use]
+    pub fn with_existing_source_ids<I>(mut self, ids: I) -> Self
+    where
+        I: IntoIterator<Item = SourceId>,
+    {
+        self.existing_source_ids.extend(ids);
+        self
+    }
+
+    /// Declares reference identities already present in canonical state.
+    #[must_use]
+    pub fn with_existing_reference_ids<I>(mut self, ids: I) -> Self
+    where
+        I: IntoIterator<Item = ReferenceId>,
+    {
+        self.existing_reference_ids.extend(ids);
+        self
+    }
+
+    /// Declares lexical-form identities already present in canonical state.
+    ///
+    /// Phase 5 does not materialize lexical forms inside the publication subgraph,
+    /// so lexical-form assertion endpoints must be declared as existing.
+    #[must_use]
+    pub fn with_existing_lexical_form_ids<I>(mut self, ids: I) -> Self
+    where
+        I: IntoIterator<Item = LexicalFormId>,
+    {
+        self.existing_lexical_form_ids.extend(ids);
+        self
+    }
+
+    /// Records explicit authenticity status for a source represented by this publication.
+    #[must_use]
+    pub fn with_source_authenticity(
+        mut self,
+        source_id: SourceId,
+        authenticity: SourceAuthenticity,
+    ) -> Self {
+        self.source_authenticity.insert(source_id, authenticity);
+        self
+    }
+
+    /// Returns the declared authenticity status for one source, if present.
+    #[must_use]
+    pub fn source_authenticity_for(&self, source_id: &SourceId) -> Option<SourceAuthenticity> {
+        self.source_authenticity.get(source_id).copied()
+    }
+
+    /// Returns all explicit source-authenticity status metadata.
+    #[must_use]
+    pub fn source_authenticity_records(&self) -> &BTreeMap<SourceId, SourceAuthenticity> {
+        &self.source_authenticity
     }
 
     /// Declares assertion identities already present in canonical state.
@@ -355,19 +430,88 @@ impl CanonicalKnowledgeSubgraph {
             .iter()
             .map(|value| value.id().clone())
             .collect::<BTreeSet<_>>();
+        let local_mentions = self
+            .mentions
+            .iter()
+            .map(|value| value.id().clone())
+            .collect::<BTreeSet<_>>();
+        let local_sources = self
+            .sources
+            .iter()
+            .map(|value| value.id().clone())
+            .collect::<BTreeSet<_>>();
+        let local_references = self
+            .references
+            .iter()
+            .map(|value| value.id().clone())
+            .collect::<BTreeSet<_>>();
+
+        let known_entities = local_entities
+            .union(&self.existing_entity_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
         let known_concepts = local_concepts
             .union(&self.existing_concept_ids)
             .cloned()
             .collect::<BTreeSet<_>>();
+        let known_mentions = local_mentions
+            .union(&self.existing_mention_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let known_sources = local_sources
+            .union(&self.existing_source_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let known_references = local_references
+            .union(&self.existing_reference_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+
         for assertion in &self.assertions {
             for object in [assertion.subject(), assertion.object()] {
-                if let AssertionObject::Concept(id) = object
-                    && !known_concepts.contains(id)
-                {
-                    return Err(SubgraphValidationError::UnknownAssertionConcept {
-                        id: id.clone(),
-                    });
+                match object {
+                    AssertionObject::Entity(id) if !known_entities.contains(id) => {
+                        return Err(SubgraphValidationError::UnknownAssertionEntity {
+                            id: id.clone(),
+                        });
+                    }
+                    AssertionObject::Concept(id) if !known_concepts.contains(id) => {
+                        return Err(SubgraphValidationError::UnknownAssertionConcept {
+                            id: id.clone(),
+                        });
+                    }
+                    AssertionObject::Mention(id) if !known_mentions.contains(id) => {
+                        return Err(SubgraphValidationError::UnknownAssertionMention {
+                            id: id.clone(),
+                        });
+                    }
+                    AssertionObject::Source(id) if !known_sources.contains(id) => {
+                        return Err(SubgraphValidationError::UnknownAssertionSource {
+                            id: id.clone(),
+                        });
+                    }
+                    AssertionObject::Reference(id) if !known_references.contains(id) => {
+                        return Err(SubgraphValidationError::UnknownAssertionReference {
+                            id: id.clone(),
+                        });
+                    }
+                    AssertionObject::LexicalForm(id)
+                        if !self.existing_lexical_form_ids.contains(id) =>
+                    {
+                        return Err(SubgraphValidationError::UnknownAssertionLexicalForm {
+                            id: id.clone(),
+                        });
+                    }
+                    _ => {}
                 }
+            }
+        }
+
+        for source_id in self.source_authenticity.keys() {
+            if !known_sources.contains(source_id) {
+                return Err(SubgraphValidationError::UnknownSourceAuthenticitySource {
+                    id: source_id.clone(),
+                });
             }
         }
         // Entity-owned external identifiers and crosswalk records must agree within
@@ -429,6 +573,28 @@ impl CanonicalKnowledgeSubgraph {
             + self.provenance_records.len()
             + self.external_identifier_crosswalks.len()
             + self.contradictions.len()
+    }
+}
+
+/// Immutable exact-content revision token for validation and approval decisions.
+///
+/// Clones share a captured typed subgraph. Publication compares the captured
+/// content structurally with the proposal, ensuring content changes invalidate
+/// stale review decisions without relying on a lossy hash.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubgraphRevision(Arc<CanonicalKnowledgeSubgraph>);
+
+impl SubgraphRevision {
+    /// Captures the exact proposed subgraph for a later validation/approval binding.
+    #[must_use]
+    pub fn capture(subgraph: &CanonicalKnowledgeSubgraph) -> Self {
+        Self(Arc::new(subgraph.clone()))
+    }
+
+    /// Returns whether a proposed subgraph is exactly the captured content.
+    #[must_use]
+    pub fn matches(&self, subgraph: &CanonicalKnowledgeSubgraph) -> bool {
+        self.0.as_ref() == subgraph
     }
 }
 
@@ -500,6 +666,7 @@ pub struct PublicationRecord {
     decision: PublicationDecision,
     subgraph: CanonicalKnowledgeSubgraph,
     readiness: IndexingReadinessReceipt,
+    source_authenticity: SourceAuthenticity,
     synchronization: IndexingSynchronizationRecord,
 }
 
@@ -508,6 +675,7 @@ impl PublicationRecord {
         decision: PublicationDecision,
         subgraph: CanonicalKnowledgeSubgraph,
         readiness: IndexingReadinessReceipt,
+        source_authenticity: SourceAuthenticity,
     ) -> Self {
         let synchronization = IndexingSynchronizationRecord::new(
             readiness.assigned_id().clone(),
@@ -518,6 +686,7 @@ impl PublicationRecord {
             decision,
             subgraph,
             readiness,
+            source_authenticity,
             synchronization,
         }
     }
@@ -536,6 +705,11 @@ impl PublicationRecord {
     #[must_use]
     pub fn readiness(&self) -> &IndexingReadinessReceipt {
         &self.readiness
+    }
+    /// Returns the source-authenticity status retained with this publication.
+    #[must_use]
+    pub const fn source_authenticity(&self) -> SourceAuthenticity {
+        self.source_authenticity
     }
     /// Returns the latest observed post-publication synchronization state.
     #[must_use]
@@ -675,12 +849,38 @@ impl PublicationCoordinator {
         if validation.candidate() != candidate.key() {
             return Err(PublicationError::CandidateMismatch);
         }
-        approval_policy
-            .validate_for_publication(candidate, validation, approval, authenticity)
-            .map_err(PublicationError::Approval)?;
         subgraph
             .validate()
             .map_err(PublicationError::InvalidSubgraph)?;
+
+        if !validation
+            .publication_revision()
+            .is_some_and(|revision| revision.matches(&subgraph))
+            || !approval
+                .publication_revision()
+                .is_some_and(|revision| revision.matches(&subgraph))
+        {
+            return Err(PublicationError::ReviewedSubgraphMismatch);
+        }
+
+        let source_id = candidate.source().source_id();
+        let recorded_authenticity =
+            subgraph.source_authenticity_for(source_id).ok_or_else(|| {
+                PublicationError::MissingSourceAuthenticityMetadata {
+                    source_id: source_id.clone(),
+                }
+            })?;
+        if recorded_authenticity != authenticity {
+            return Err(PublicationError::SourceAuthenticityMismatch {
+                source_id: source_id.clone(),
+                expected: authenticity,
+                recorded: recorded_authenticity,
+            });
+        }
+
+        approval_policy
+            .validate_for_publication(candidate, validation, approval, authenticity)
+            .map_err(PublicationError::Approval)?;
         readiness
             .require_ready()
             .map_err(PublicationError::Indexing)?;
@@ -707,6 +907,7 @@ impl PublicationCoordinator {
             decision,
             subgraph,
             readiness.clone(),
+            authenticity,
         ))
     }
 
@@ -779,8 +980,20 @@ pub enum SubgraphValidationError {
     UnknownEvidenceSupportAssertion { id: KnowledgeAssertionId },
     /// An evidence support points to unknown evidence.
     UnknownEvidenceSupportEvidence { id: EvidenceId },
+    /// An assertion refers to an entity absent from this subgraph and canonical state.
+    UnknownAssertionEntity { id: EntityId },
     /// An assertion refers to a concept absent from this subgraph and canonical state.
     UnknownAssertionConcept { id: ConceptId },
+    /// An assertion refers to a mention absent from this subgraph and canonical state.
+    UnknownAssertionMention { id: MentionId },
+    /// An assertion refers to a source absent from this subgraph and canonical state.
+    UnknownAssertionSource { id: SourceId },
+    /// An assertion refers to a reference absent from this subgraph and canonical state.
+    UnknownAssertionReference { id: ReferenceId },
+    /// An assertion refers to a lexical form not declared in canonical state.
+    UnknownAssertionLexicalForm { id: LexicalFormId },
+    /// Authenticity metadata refers to a source absent from local or declared state.
+    UnknownSourceAuthenticitySource { id: SourceId },
     /// A crosswalk points to an entity absent from this subgraph and canonical state.
     UnknownCrosswalkEntity { id: EntityId },
     /// One external identifier maps to multiple canonical entities in this subgraph.
@@ -812,8 +1025,29 @@ impl fmt::Display for SubgraphValidationError {
                 formatter,
                 "evidence support references unknown evidence {id}"
             ),
+            Self::UnknownAssertionEntity { id } => {
+                write!(formatter, "assertion references unknown entity {id}")
+            }
             Self::UnknownAssertionConcept { id } => {
                 write!(formatter, "assertion references unknown concept {id}")
+            }
+            Self::UnknownAssertionMention { id } => {
+                write!(formatter, "assertion references unknown mention {id}")
+            }
+            Self::UnknownAssertionSource { id } => {
+                write!(formatter, "assertion references unknown source {id}")
+            }
+            Self::UnknownAssertionReference { id } => {
+                write!(formatter, "assertion references unknown reference {id}")
+            }
+            Self::UnknownAssertionLexicalForm { id } => {
+                write!(formatter, "assertion references unknown lexical form {id}")
+            }
+            Self::UnknownSourceAuthenticitySource { id } => {
+                write!(
+                    formatter,
+                    "source authenticity metadata references unknown source {id}"
+                )
             }
             Self::UnknownCrosswalkEntity { id } => write!(
                 formatter,
@@ -838,6 +1072,16 @@ pub enum PublicationError {
     CandidateMismatch,
     /// The candidate did not satisfy governance policy.
     Approval(ApprovalError),
+    /// Validation and approval were not bound to the exact proposed semantic subgraph.
+    ReviewedSubgraphMismatch,
+    /// Source authenticity must be explicitly retained in the proposed subgraph.
+    MissingSourceAuthenticityMetadata { source_id: SourceId },
+    /// The passed authenticity classification differs from the subgraph's explicit status.
+    SourceAuthenticityMismatch {
+        source_id: SourceId,
+        expected: SourceAuthenticity,
+        recorded: SourceAuthenticity,
+    },
     /// The proposed semantic subgraph is invalid.
     InvalidSubgraph(SubgraphValidationError),
     /// Indexing did not acknowledge a publishable readiness state.
@@ -859,6 +1103,20 @@ impl fmt::Display for PublicationError {
                 formatter.write_str("publication validation result targets a different candidate")
             }
             Self::Approval(error) => write!(formatter, "publication approval gate failed: {error}"),
+            Self::ReviewedSubgraphMismatch => formatter
+                .write_str("validation and approval must be bound to the exact proposed subgraph"),
+            Self::MissingSourceAuthenticityMetadata { source_id } => write!(
+                formatter,
+                "publication subgraph is missing explicit authenticity metadata for source {source_id}",
+            ),
+            Self::SourceAuthenticityMismatch {
+                source_id,
+                expected,
+                recorded,
+            } => write!(
+                formatter,
+                "source authenticity metadata for {source_id} does not match: requested={expected:?}, recorded={recorded:?}",
+            ),
             Self::InvalidSubgraph(error) => {
                 write!(formatter, "publication subgraph is invalid: {error}")
             }
@@ -902,7 +1160,7 @@ fn validate_label(value: &str, field: &'static str) -> Result<(), PublicationErr
 mod tests {
     use super::{
         CanonicalKnowledgeSubgraph, PublicationCoordinator, PublicationError, PublicationOutcome,
-        PublicationRecord, PublicationRequest,
+        PublicationRecord, PublicationRequest, SubgraphRevision,
     };
     use crate::assertion::{
         AssertionContext, AssertionObject, AssertionPolarity, AssertionPredicate, AssertionStatus,
@@ -910,9 +1168,10 @@ mod tests {
     };
     use crate::concept::Concept;
     use crate::entity::{Entity, ExternalIdentifier, Name};
-    use crate::identity::{ConceptId, EntityId, SourceId};
+    use crate::identity::{ConceptId, EntityId, LexicalFormId, MentionId, ReferenceId, SourceId};
     use crate::ingestion::approval::{
-        ApprovalDecision, ApprovalOutcome, ApprovalPolicy, CurationOutcome, SourceAuthenticity,
+        ApprovalDecision, ApprovalOutcome, ApprovalPolicy, CurationOutcome, CurationRequirement,
+        SourceApprovalRule, SourceAuthenticity,
     };
     use crate::ingestion::mapping::{MappedCandidate, MappingMetadata};
     use crate::ingestion::normalize::{NormalizationMetadata, NormalizedRecord};
@@ -991,7 +1250,10 @@ mod tests {
         })
     }
 
-    fn subgraph() -> CanonicalKnowledgeSubgraph {
+    fn subgraph_for(
+        source_id: &SourceId,
+        authenticity: SourceAuthenticity,
+    ) -> CanonicalKnowledgeSubgraph {
         let entity_id = EntityId::new("entity-publication").unwrap();
         let concept_id = ConceptId::new("concept-publication").unwrap();
         let assertion = KnowledgeAssertion::new(
@@ -1010,6 +1272,47 @@ mod tests {
                 Vec::new(),
             )])
             .with_concepts([Concept::new(concept_id, "concept")])
+            .with_assertions([assertion])
+            .with_existing_source_ids([source_id.clone()])
+            .with_source_authenticity(source_id.clone(), authenticity)
+    }
+
+    fn subgraph() -> CanonicalKnowledgeSubgraph {
+        subgraph_for(
+            &SourceId::new("source-publish").unwrap(),
+            SourceAuthenticity::Authentic,
+        )
+    }
+
+    fn bind_review(
+        subgraph: &CanonicalKnowledgeSubgraph,
+        validation: ValidationResult,
+        approval: ApprovalDecision,
+    ) -> (ValidationResult, ApprovalDecision) {
+        let revision = SubgraphRevision::capture(subgraph);
+        (
+            validation.with_publication_revision(revision.clone()),
+            approval.with_publication_revision(revision),
+        )
+    }
+
+    fn subgraph_with_assertion_subject(subject: AssertionObject) -> CanonicalKnowledgeSubgraph {
+        let known_entity_id = EntityId::new("endpoint-known-entity").unwrap();
+        let assertion = KnowledgeAssertion::new(
+            subject,
+            AssertionPredicate::new("points-to").unwrap(),
+            AssertionObject::Entity(known_entity_id.clone()),
+            AssertionContext::new(),
+            Qualifiers::new(),
+            AssertionStatus::Known,
+            AssertionPolarity::Positive,
+        );
+        CanonicalKnowledgeSubgraph::new()
+            .with_entities([Entity::new(
+                known_entity_id,
+                Name::new("Known target", "en"),
+                Vec::new(),
+            )])
             .with_assertions([assertion])
     }
 
@@ -1051,9 +1354,270 @@ mod tests {
     }
 
     #[test]
+    fn assertions_reject_entity_mention_source_reference_and_lexical_form_endpoints_that_do_not_exist()
+     {
+        let missing_entity = EntityId::new("endpoint-missing-entity").unwrap();
+        assert_eq!(
+            subgraph_with_assertion_subject(AssertionObject::Entity(missing_entity.clone()))
+                .validate(),
+            Err(super::SubgraphValidationError::UnknownAssertionEntity { id: missing_entity })
+        );
+
+        let missing_mention = MentionId::new("endpoint-missing-mention").unwrap();
+        assert_eq!(
+            subgraph_with_assertion_subject(AssertionObject::Mention(missing_mention.clone()))
+                .validate(),
+            Err(super::SubgraphValidationError::UnknownAssertionMention {
+                id: missing_mention,
+            })
+        );
+
+        let missing_source = SourceId::new("endpoint-missing-source").unwrap();
+        assert_eq!(
+            subgraph_with_assertion_subject(AssertionObject::Source(missing_source.clone()))
+                .validate(),
+            Err(super::SubgraphValidationError::UnknownAssertionSource { id: missing_source })
+        );
+
+        let missing_reference = ReferenceId::new("endpoint-missing-reference").unwrap();
+        assert_eq!(
+            subgraph_with_assertion_subject(AssertionObject::Reference(missing_reference.clone()))
+                .validate(),
+            Err(super::SubgraphValidationError::UnknownAssertionReference {
+                id: missing_reference,
+            })
+        );
+
+        let missing_lexical_form = LexicalFormId::new("endpoint-missing-lexical-form").unwrap();
+        assert_eq!(
+            subgraph_with_assertion_subject(AssertionObject::LexicalForm(
+                missing_lexical_form.clone()
+            ))
+            .validate(),
+            Err(
+                super::SubgraphValidationError::UnknownAssertionLexicalForm {
+                    id: missing_lexical_form,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn assertion_endpoints_can_resolve_through_explicit_existing_identity_sets() {
+        let source_id = SourceId::new("endpoint-existing-source").unwrap();
+        let mention_id = MentionId::new("endpoint-existing-mention").unwrap();
+        let reference_id = ReferenceId::new("endpoint-existing-reference").unwrap();
+        let lexical_form_id = LexicalFormId::new("endpoint-existing-lexical-form").unwrap();
+        let entity_id = EntityId::new("endpoint-existing-entity").unwrap();
+        let concept_id = ConceptId::new("endpoint-existing-concept").unwrap();
+
+        let assertion_for = |subject| {
+            KnowledgeAssertion::new(
+                subject,
+                AssertionPredicate::new("points-to").unwrap(),
+                AssertionObject::Entity(entity_id.clone()),
+                AssertionContext::new(),
+                Qualifiers::new(),
+                AssertionStatus::Known,
+                AssertionPolarity::Positive,
+            )
+        };
+        let subgraph = CanonicalKnowledgeSubgraph::new()
+            .with_assertions([
+                assertion_for(AssertionObject::Entity(entity_id.clone())),
+                assertion_for(AssertionObject::Concept(concept_id.clone())),
+                assertion_for(AssertionObject::Mention(mention_id.clone())),
+                assertion_for(AssertionObject::Source(source_id.clone())),
+                assertion_for(AssertionObject::Reference(reference_id.clone())),
+                assertion_for(AssertionObject::LexicalForm(lexical_form_id.clone())),
+            ])
+            .with_existing_entity_ids([entity_id])
+            .with_existing_concept_ids([concept_id])
+            .with_existing_mention_ids([mention_id])
+            .with_existing_source_ids([source_id])
+            .with_existing_reference_ids([reference_id])
+            .with_existing_lexical_form_ids([lexical_form_id]);
+
+        assert!(subgraph.validate().is_ok());
+    }
+
+    #[test]
+    fn validation_and_approval_cannot_be_reused_for_changed_subgraph_content() {
+        let candidate = candidate();
+        let reviewed = subgraph_for(
+            candidate.source().source_id(),
+            SourceAuthenticity::Authentic,
+        );
+        let approval = ApprovalDecision::new(
+            candidate.key().clone(),
+            candidate.source().source_class().clone(),
+            ApprovalOutcome::Approved,
+            crate::identity::AgentId::new("reviewer-stale-subgraph").unwrap(),
+            Instant::from_unix_seconds(2),
+            CurationOutcome::NotRequired,
+            Some("reviewed the original subgraph".to_owned()),
+        )
+        .unwrap();
+        let (validation, approval) = bind_review(
+            &reviewed,
+            ValidationResult::valid(candidate.key().clone()),
+            approval,
+        );
+
+        let changed = reviewed.clone().with_concepts([Concept::new(
+            ConceptId::new("concept-added-after-review").unwrap(),
+            "newly mapped concept",
+        )]);
+        let result = publish_candidate(
+            &candidate,
+            changed,
+            &validation,
+            &approval,
+            &readiness(),
+            Instant::from_unix_seconds(3),
+        );
+
+        assert_eq!(result, Err(PublicationError::ReviewedSubgraphMismatch));
+    }
+
+    #[test]
+    fn source_authenticity_must_match_subgraph_metadata_and_is_retained() {
+        let candidate = candidate();
+        let authentic = subgraph_for(
+            candidate.source().source_id(),
+            SourceAuthenticity::Authentic,
+        );
+        let approval = ApprovalDecision::new(
+            candidate.key().clone(),
+            candidate.source().source_class().clone(),
+            ApprovalOutcome::Approved,
+            crate::identity::AgentId::new("reviewer-authenticity").unwrap(),
+            Instant::from_unix_seconds(2),
+            CurationOutcome::NotRequired,
+            Some("reviewed".to_owned()),
+        )
+        .unwrap();
+        let (validation, approval) = bind_review(
+            &authentic,
+            ValidationResult::valid(candidate.key().clone()),
+            approval,
+        );
+        let default_policy = ApprovalPolicy::phase5_default();
+        let mismatch = PublicationCoordinator.publish(PublicationRequest {
+            candidate: &candidate,
+            subgraph: authentic,
+            validation: &validation,
+            approval_policy: &default_policy,
+            approval: &approval,
+            authenticity: SourceAuthenticity::NonAuthentic,
+            readiness: &readiness(),
+            published_at: Instant::from_unix_seconds(3),
+        });
+        assert!(matches!(
+            mismatch,
+            Err(PublicationError::SourceAuthenticityMismatch {
+                expected: SourceAuthenticity::NonAuthentic,
+                recorded: SourceAuthenticity::Authentic,
+                ..
+            })
+        ));
+
+        let unlabelled = CanonicalKnowledgeSubgraph::new()
+            .with_entities([Entity::new(
+                EntityId::new("entity-unlabelled-authenticity").unwrap(),
+                Name::new("Unlabelled source material", "en"),
+                Vec::new(),
+            )])
+            .with_existing_source_ids([candidate.source().source_id().clone()]);
+        let revision = SubgraphRevision::capture(&unlabelled);
+        let unlabelled_validation = ValidationResult::valid(candidate.key().clone())
+            .with_publication_revision(revision.clone());
+        let unlabelled_approval = ApprovalDecision::new(
+            candidate.key().clone(),
+            candidate.source().source_class().clone(),
+            ApprovalOutcome::Approved,
+            crate::identity::AgentId::new("reviewer-unlabelled-authenticity").unwrap(),
+            Instant::from_unix_seconds(3),
+            CurationOutcome::NotRequired,
+            Some("reviewed without an authenticity label".to_owned()),
+        )
+        .unwrap()
+        .with_publication_revision(revision);
+        let mut permissive_policy = ApprovalPolicy::phase5_default();
+        permissive_policy.set_rule(
+            candidate.source().source_class().clone(),
+            SourceApprovalRule::new(CurationRequirement::Optional, false, false, true),
+        );
+        let missing_status = PublicationCoordinator.publish(PublicationRequest {
+            candidate: &candidate,
+            subgraph: unlabelled,
+            validation: &unlabelled_validation,
+            approval_policy: &permissive_policy,
+            approval: &unlabelled_approval,
+            authenticity: SourceAuthenticity::NonAuthentic,
+            readiness: &readiness(),
+            published_at: Instant::from_unix_seconds(4),
+        });
+        assert!(matches!(
+            missing_status,
+            Err(PublicationError::MissingSourceAuthenticityMetadata { .. })
+        ));
+
+        let non_authentic = subgraph_for(
+            candidate.source().source_id(),
+            SourceAuthenticity::NonAuthentic,
+        );
+        let revision = SubgraphRevision::capture(&non_authentic);
+        let validation = ValidationResult::valid(candidate.key().clone())
+            .with_publication_revision(revision.clone());
+        let approval = ApprovalDecision::new(
+            candidate.key().clone(),
+            candidate.source().source_class().clone(),
+            ApprovalOutcome::Approved,
+            crate::identity::AgentId::new("reviewer-non-authentic").unwrap(),
+            Instant::from_unix_seconds(4),
+            CurationOutcome::NotRequired,
+            Some("non-authentic status explicitly reviewed".to_owned()),
+        )
+        .unwrap()
+        .with_publication_revision(revision);
+        let mut policy = ApprovalPolicy::phase5_default();
+        policy.set_rule(
+            candidate.source().source_class().clone(),
+            SourceApprovalRule::new(CurationRequirement::Optional, false, false, true),
+        );
+        let record = PublicationCoordinator
+            .publish(PublicationRequest {
+                candidate: &candidate,
+                subgraph: non_authentic,
+                validation: &validation,
+                approval_policy: &policy,
+                approval: &approval,
+                authenticity: SourceAuthenticity::NonAuthentic,
+                readiness: &readiness(),
+                published_at: Instant::from_unix_seconds(5),
+            })
+            .expect("explicitly permitted authenticity metadata is retained");
+
+        assert_eq!(
+            record.source_authenticity(),
+            SourceAuthenticity::NonAuthentic
+        );
+        assert_eq!(
+            record
+                .subgraph()
+                .source_authenticity_for(candidate.source().source_id()),
+            Some(SourceAuthenticity::NonAuthentic)
+        );
+    }
+
+    #[test]
     fn publication_requires_validation_approval_and_index_readiness() {
         let candidate = candidate();
-        let validation = ValidationResult::valid(candidate.key().clone());
+        let proposed = subgraph_for(
+            candidate.source().source_id(),
+            SourceAuthenticity::Authentic,
+        );
         let approval = ApprovalDecision::new(
             candidate.key().clone(),
             candidate.source().source_class().clone(),
@@ -1064,10 +1628,15 @@ mod tests {
             Some("reviewed".to_owned()),
         )
         .unwrap();
+        let (validation, approval) = bind_review(
+            &proposed,
+            ValidationResult::valid(candidate.key().clone()),
+            approval,
+        );
         let ready = readiness();
         let result = publish_candidate(
             &candidate,
-            subgraph(),
+            proposed,
             &validation,
             &approval,
             &ready,
@@ -1076,6 +1645,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.decision().outcome(), PublicationOutcome::Published);
+        assert_eq!(result.source_authenticity(), SourceAuthenticity::Authentic);
         assert_eq!(result.subgraph().object_count(), 3);
         assert_eq!(
             result.synchronization().status(),
@@ -1086,6 +1656,10 @@ mod tests {
     #[test]
     fn publication_rejects_indexing_receipt_for_another_source_record() {
         let candidate = candidate();
+        let proposed = subgraph_for(
+            candidate.source().source_id(),
+            SourceAuthenticity::Authentic,
+        );
         let approval = ApprovalDecision::new(
             candidate.key().clone(),
             candidate.source().source_class().clone(),
@@ -1096,11 +1670,15 @@ mod tests {
             None,
         )
         .unwrap();
+        let (validation, approval) = bind_review(
+            &proposed,
+            ValidationResult::valid(candidate.key().clone()),
+            approval,
+        );
         let wrong_receipt = readiness_for("other-record");
-        let validation = ValidationResult::valid(candidate.key().clone());
         let result = publish_candidate(
             &candidate,
-            subgraph(),
+            proposed,
             &validation,
             &approval,
             &wrong_receipt,
@@ -1141,6 +1719,10 @@ mod tests {
     #[test]
     fn withdrawal_and_correction_preserve_the_original_publication_decision() {
         let candidate = candidate();
+        let proposed = subgraph_for(
+            candidate.source().source_id(),
+            SourceAuthenticity::Authentic,
+        );
         let approval = ApprovalDecision::new(
             candidate.key().clone(),
             candidate.source().source_class().clone(),
@@ -1151,11 +1733,15 @@ mod tests {
             None,
         )
         .unwrap();
-        let validation = ValidationResult::valid(candidate.key().clone());
+        let (validation, approval) = bind_review(
+            &proposed,
+            ValidationResult::valid(candidate.key().clone()),
+            approval,
+        );
         let ready = readiness();
         let published = publish_candidate(
             &candidate,
-            subgraph(),
+            proposed,
             &validation,
             &approval,
             &ready,
@@ -1207,6 +1793,10 @@ mod tests {
     #[test]
     fn post_publication_index_sync_failure_does_not_rewrite_publication_outcome() {
         let candidate = candidate();
+        let proposed = subgraph_for(
+            candidate.source().source_id(),
+            SourceAuthenticity::Authentic,
+        );
         let approval = ApprovalDecision::new(
             candidate.key().clone(),
             candidate.source().source_class().clone(),
@@ -1217,11 +1807,15 @@ mod tests {
             None,
         )
         .unwrap();
-        let validation = ValidationResult::valid(candidate.key().clone());
+        let (validation, approval) = bind_review(
+            &proposed,
+            ValidationResult::valid(candidate.key().clone()),
+            approval,
+        );
         let ready = readiness();
         let published = publish_candidate(
             &candidate,
-            subgraph(),
+            proposed,
             &validation,
             &approval,
             &ready,

@@ -12,8 +12,8 @@ use nizaam_knowledge_graph::ingestion::{
     ApprovalDecision, ApprovalOutcome, ApprovalPolicy, CanonicalKnowledgeSubgraph,
     CorrectionRecord, CurationOutcome, GenericTextNormalizer, MappedCandidate, MappingMetadata,
     NormalizationStage, PublicationCoordinator, PublicationOutcome, PublicationRequest,
-    SourceAuthenticity, SourceClass, SourceRecord, SourceRecordMetadata, TextNormalizationMode,
-    ValidationResult,
+    SourceAuthenticity, SourceClass, SourceRecord, SourceRecordMetadata, SubgraphRevision,
+    TextNormalizationMode, ValidationResult,
 };
 use nizaam_knowledge_graph::integration::indexing::{
     IndexingPublicationReadiness, IndexingReadinessReceipt, IndexingSynchronizationStatus,
@@ -57,7 +57,7 @@ fn readiness(record_key: &str, state: IndexingPublicationReadiness) -> IndexingR
     )
 }
 
-fn approved(candidate: &MappedCandidate<()>) -> ApprovalDecision {
+fn approved(candidate: &MappedCandidate<()>, revision: SubgraphRevision) -> ApprovalDecision {
     ApprovalDecision::new(
         candidate.key().clone(),
         candidate.source().source_class().clone(),
@@ -68,15 +68,19 @@ fn approved(candidate: &MappedCandidate<()>) -> ApprovalDecision {
         Some("reviewed and approved".to_owned()),
     )
     .unwrap()
+    .with_publication_revision(revision)
 }
 
-fn subgraph() -> CanonicalKnowledgeSubgraph {
+fn subgraph(source_id: &SourceId, authenticity: SourceAuthenticity) -> CanonicalKnowledgeSubgraph {
     let entity = Entity::new(
         EntityId::new("entity-publication-level3").unwrap(),
         Name::new("Amina", "en"),
         Vec::new(),
     );
-    CanonicalKnowledgeSubgraph::new().with_entities([entity])
+    CanonicalKnowledgeSubgraph::new()
+        .with_entities([entity])
+        .with_existing_source_ids([source_id.clone()])
+        .with_source_authenticity(source_id.clone(), authenticity)
 }
 
 fn publish(
@@ -105,12 +109,19 @@ fn publish(
 #[test]
 fn publication_requires_validation_human_approval_and_explicit_indexing_readiness() {
     let candidate = candidate_for("record-1");
-    let validation = ValidationResult::valid(candidate.key().clone());
-    let approval = approved(&candidate);
+    let proposed = subgraph(
+        candidate.source().source_id(),
+        SourceAuthenticity::Authentic,
+    );
+    let revision = SubgraphRevision::capture(&proposed);
+    let validation = ValidationResult::valid(candidate.key().clone())
+        .with_publication_revision(revision.clone());
+    let approval = approved(&candidate, revision);
     let ready = readiness("record-1", IndexingPublicationReadiness::Ready);
-    let record = publish(&candidate, subgraph(), &validation, &approval, &ready).unwrap();
+    let record = publish(&candidate, proposed, &validation, &approval, &ready).unwrap();
 
     assert_eq!(record.decision().outcome(), PublicationOutcome::Published);
+    assert_eq!(record.source_authenticity(), SourceAuthenticity::Authentic);
     assert_eq!(record.subgraph().entities().len(), 1);
     assert_eq!(record.readiness().assigned_id(), ready.assigned_id());
     assert_eq!(
@@ -124,16 +135,34 @@ fn publication_requires_validation_human_approval_and_explicit_indexing_readines
             nizaam_knowledge_graph::integration::indexing::IndexingReadinessBlocker::Stale,
         ),
     );
-    assert!(publish(&candidate, subgraph(), &validation, &approval, &blocked).is_err());
+    assert!(
+        publish(
+            &candidate,
+            subgraph(
+                candidate.source().source_id(),
+                SourceAuthenticity::Authentic
+            ),
+            &validation,
+            &approval,
+            &blocked,
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn indexing_sync_failure_does_not_rewrite_successful_logical_publication() {
     let candidate = candidate_for("record-2");
-    let validation = ValidationResult::valid(candidate.key().clone());
-    let approval = approved(&candidate);
+    let proposed = subgraph(
+        candidate.source().source_id(),
+        SourceAuthenticity::Authentic,
+    );
+    let revision = SubgraphRevision::capture(&proposed);
+    let validation = ValidationResult::valid(candidate.key().clone())
+        .with_publication_revision(revision.clone());
+    let approval = approved(&candidate, revision);
     let ready = readiness("record-2", IndexingPublicationReadiness::Ready);
-    let published = publish(&candidate, subgraph(), &validation, &approval, &ready).unwrap();
+    let published = publish(&candidate, proposed, &validation, &approval, &ready).unwrap();
     let retryable = published
         .clone()
         .with_synchronization_status(IndexingSynchronizationStatus::RetryableFailure);
@@ -155,10 +184,16 @@ fn indexing_sync_failure_does_not_rewrite_successful_logical_publication() {
 #[test]
 fn withdrawal_and_correction_are_separate_records_from_the_original_publication() {
     let candidate = candidate_for("record-3");
-    let validation = ValidationResult::valid(candidate.key().clone());
-    let approval = approved(&candidate);
+    let proposed = subgraph(
+        candidate.source().source_id(),
+        SourceAuthenticity::Authentic,
+    );
+    let revision = SubgraphRevision::capture(&proposed);
+    let validation = ValidationResult::valid(candidate.key().clone())
+        .with_publication_revision(revision.clone());
+    let approval = approved(&candidate, revision);
     let ready = readiness("record-3", IndexingPublicationReadiness::Ready);
-    let published = publish(&candidate, subgraph(), &validation, &approval, &ready).unwrap();
+    let published = publish(&candidate, proposed, &validation, &approval, &ready).unwrap();
 
     let withdrawal = PublicationCoordinator
         .withdraw(

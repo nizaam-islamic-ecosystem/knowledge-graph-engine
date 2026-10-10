@@ -37,7 +37,7 @@ pub use pipeline::{
 };
 pub use publication::{
     CanonicalKnowledgeSubgraph, CorrectionRecord, PublicationCoordinator, PublicationDecision,
-    PublicationError, PublicationOutcome, PublicationRecord, PublicationRequest,
+    PublicationError, PublicationOutcome, PublicationRecord, PublicationRequest, SubgraphRevision,
     SubgraphValidationError, WithdrawalRecord,
 };
 pub use raw::{

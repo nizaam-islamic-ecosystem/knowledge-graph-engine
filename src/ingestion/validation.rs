@@ -8,6 +8,7 @@ use core::fmt;
 use std::collections::BTreeMap;
 
 use super::mapping::{CandidateKey, MappedCandidate};
+use super::publication::SubgraphRevision;
 use super::raw::SourceRecordMetadataError;
 
 /// Severity assigned to a validation finding by a policy.
@@ -118,6 +119,7 @@ pub struct ValidationResult {
     candidate: CandidateKey,
     findings: Vec<ValidationFinding>,
     status: ValidationStatus,
+    publication_revision: Option<SubgraphRevision>,
 }
 
 impl ValidationResult {
@@ -136,7 +138,23 @@ impl ValidationResult {
             candidate,
             findings,
             status,
+            publication_revision: None,
         }
+    }
+
+    /// Binds this validation result to the exact semantic subgraph that was reviewed.
+    ///
+    /// Publication rejects an unbound result or one bound to different subgraph content.
+    #[must_use]
+    pub fn with_publication_revision(mut self, revision: SubgraphRevision) -> Self {
+        self.publication_revision = Some(revision);
+        self
+    }
+
+    /// Returns the exact-subgraph revision this result applies to, when bound.
+    #[must_use]
+    pub fn publication_revision(&self) -> Option<&SubgraphRevision> {
+        self.publication_revision.as_ref()
     }
 
     /// Creates a successful result with no findings.
@@ -236,16 +254,11 @@ impl ValidationPolicy {
     pub fn finding(
         &self,
         code: impl Into<String>,
-        default_severity: ValidationSeverity,
         stage: ValidationStage,
         message: impl Into<String>,
     ) -> Result<ValidationFinding, ValidationError> {
         let code = code.into();
-        let severity = self
-            .overrides
-            .get(&code)
-            .copied()
-            .unwrap_or(default_severity);
+        let severity = self.severity_for(&code);
         ValidationFinding::new(code, severity, stage, message)
     }
 }
@@ -269,7 +282,6 @@ pub fn validate_candidate_structure<T>(
         policy
             .finding(
                 "source-record-metadata-invalid",
-                ValidationSeverity::Fatal,
                 ValidationStage::Structural,
                 error.to_string(),
             )
@@ -389,12 +401,36 @@ mod tests {
         let finding = policy
             .finding(
                 "optional-metadata-missing",
-                ValidationSeverity::Fatal,
                 ValidationStage::Structural,
                 "metadata is optional",
             )
             .unwrap();
         assert_eq!(finding.severity(), ValidationSeverity::Info);
+    }
+
+    #[test]
+    fn unknown_rules_use_the_policy_default_severity() {
+        let policy = ValidationPolicy::new().with_default_severity(ValidationSeverity::Warning);
+        let finding = policy
+            .finding(
+                "unknown-rule",
+                ValidationStage::Structural,
+                "unclassified rule",
+            )
+            .expect("valid finding");
+
+        assert_eq!(finding.severity(), ValidationSeverity::Warning);
+        assert_eq!(
+            ValidationPolicy::new()
+                .finding(
+                    "unknown-default-rule",
+                    ValidationStage::Structural,
+                    "default recoverable error",
+                )
+                .expect("valid finding")
+                .severity(),
+            ValidationSeverity::Error
+        );
     }
 
     #[test]

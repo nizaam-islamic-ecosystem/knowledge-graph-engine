@@ -64,7 +64,7 @@ fn recoverable_errors_quarantine_while_warnings_remain_publishable() {
 }
 
 #[test]
-fn configured_rule_severity_overrides_stage_default_deterministically() {
+fn configured_rule_severity_overrides_policy_default_deterministically() {
     let mut policy = ValidationPolicy::new();
     policy
         .set_rule_severity("known-optional-field", ValidationSeverity::Info)
@@ -72,7 +72,6 @@ fn configured_rule_severity_overrides_stage_default_deterministically() {
     let first = policy
         .finding(
             "known-optional-field",
-            ValidationSeverity::Fatal,
             ValidationStage::Structural,
             "field is not mandatory",
         )
@@ -80,13 +79,35 @@ fn configured_rule_severity_overrides_stage_default_deterministically() {
     let second = policy
         .finding(
             "known-optional-field",
-            ValidationSeverity::Warning,
             ValidationStage::Structural,
             "field is not mandatory",
         )
         .unwrap();
     assert_eq!(first.severity(), ValidationSeverity::Info);
     assert_eq!(second.severity(), ValidationSeverity::Info);
+}
+
+#[test]
+fn unconfigured_rules_use_the_validation_policys_default_severity() {
+    let policy = ValidationPolicy::new().with_default_severity(ValidationSeverity::Warning);
+    let finding = policy
+        .finding(
+            "unknown-rule",
+            ValidationStage::Structural,
+            "no override configured",
+        )
+        .unwrap();
+    assert_eq!(finding.severity(), ValidationSeverity::Warning);
+
+    let default_policy = ValidationPolicy::new();
+    let finding = default_policy
+        .finding(
+            "another-unknown-rule",
+            ValidationStage::Structural,
+            "fallback to policy default",
+        )
+        .unwrap();
+    assert_eq!(finding.severity(), ValidationSeverity::Error);
 }
 
 #[test]

@@ -492,6 +492,7 @@ impl SourceAdapter for StructuredJsonAdapter {
             let mut external_identifiers = Vec::new();
             if let Some(field) = &self.external_identifier_field
                 && let Some(value) = Self::scalar_field(object, field)
+                && !value.is_null()
             {
                 let value = Self::scalar_text(value).ok_or_else(|| SourceAdapterError::DecodeFailed(format!(
                         "JSON record at ordinal {ordinal} has a non-string/non-number external identifier"
@@ -796,9 +797,12 @@ mod tests {
         .unwrap();
 
         let records = adapter
-            .decode(&raw, br#"[{"id":"a-1","external_id":"P-1"},{"id":2}]"#)
+            .decode(
+                &raw,
+                br#"[{"id":"a-1","external_id":"P-1"},{"id":2},{"id":"c-3","external_id":null}]"#,
+            )
             .unwrap();
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.len(), 3);
         assert_eq!(records[0].metadata().source_record_key(), "a-1");
         assert_eq!(records[0].metadata().source_locator(), Some("/0"));
         assert_eq!(
@@ -812,6 +816,35 @@ mod tests {
         );
         assert_eq!(records[1].metadata().source_record_key(), "2");
         assert_eq!(records[1].metadata().source_version(), Some("snapshot-2"));
+        assert!(records[1].metadata().external_identifiers().is_empty());
+        assert_eq!(records[2].metadata().source_record_key(), "c-3");
+        assert!(records[2].metadata().external_identifiers().is_empty());
+    }
+
+    #[test]
+    fn structured_json_adapter_rejects_unsupported_external_id_types_but_skips_null_and_blank() {
+        let source = SourceId::new("source-json-external-id-types").unwrap();
+        let adapter = StructuredJsonAdapter::new(source.clone())
+            .with_record_key_field("id")
+            .unwrap()
+            .with_external_identifier_field("external_id")
+            .unwrap();
+        let raw = raw(source, SourceClass::structured_data());
+
+        let null_and_blank = adapter
+            .decode(&raw, br#"[{"id":"null-id","external_id":null},{"id":"blank-id","external_id":"  "},{"id":"missing"}]"#)
+            .unwrap();
+        assert!(
+            null_and_blank
+                .iter()
+                .all(|record| record.metadata().external_identifiers().is_empty())
+        );
+
+        assert!(matches!(
+            adapter.decode(&raw, br#"[{"id":"bad-id","external_id":[] }]"#),
+            Err(SourceAdapterError::DecodeFailed(message))
+                if message.contains("non-string/non-number external identifier")
+        ));
     }
 
     #[test]

@@ -10,8 +10,8 @@ use nizaam_knowledge_graph::ingestion::{
     ApprovalDecision, ApprovalOutcome, ApprovalPolicy, CanonicalKnowledgeSubgraph, CurationOutcome,
     GenericTextNormalizer, MappedCandidate, MappingMetadata, NormalizationStage,
     PublicationCoordinator, PublicationOutcome, PublicationRequest, RawMaterial, SourceAdapter,
-    SourceAuthenticity, SourceClass, SourceRecord, StructuredJsonAdapter, TextNormalizationMode,
-    ValidationPolicy, validate_candidate_structure,
+    SourceAuthenticity, SourceClass, SourceRecord, StructuredJsonAdapter, SubgraphRevision,
+    TextNormalizationMode, ValidationPolicy, validate_candidate_structure,
 };
 use nizaam_knowledge_graph::integration::indexing::{
     IndexingPublicationReadiness, IndexingReadinessReceipt, IndexingSynchronizationStatus,
@@ -102,8 +102,13 @@ fn source_record_can_be_normalized_mapped_validated_approved_and_published() {
     let crosswalk = ExternalIdentifierCrosswalk::new(external, entity_id.clone());
     let subgraph = CanonicalKnowledgeSubgraph::new()
         .with_entities([entity])
-        .with_external_identifier_crosswalks([crosswalk]);
+        .with_external_identifier_crosswalks([crosswalk])
+        .with_existing_source_ids([source_id.clone()])
+        .with_source_authenticity(source_id.clone(), SourceAuthenticity::Authentic);
     assert!(subgraph.validate().is_ok());
+    let revision = SubgraphRevision::capture(&subgraph);
+    let validation = validation.with_publication_revision(revision.clone());
+    let approval = approval.with_publication_revision(revision);
 
     let object_reference = ObjectReference::new("source-phase5-integration", "record-1").unwrap();
     let target_type = TargetReferenceType::new("entity").unwrap();
@@ -182,11 +187,17 @@ fn post_publication_index_failure_is_recoverable_without_rewriting_publication_d
     )
     .unwrap();
     let entity_id = EntityId::new("entity-sync").unwrap();
-    let subgraph = CanonicalKnowledgeSubgraph::new().with_entities([Entity::new(
-        entity_id,
-        Name::new("Sync entity", "en"),
-        Vec::new(),
-    )]);
+    let subgraph = CanonicalKnowledgeSubgraph::new()
+        .with_entities([Entity::new(
+            entity_id,
+            Name::new("Sync entity", "en"),
+            Vec::new(),
+        )])
+        .with_existing_source_ids([source_id.clone()])
+        .with_source_authenticity(source_id.clone(), SourceAuthenticity::Authentic);
+    let revision = SubgraphRevision::capture(&subgraph);
+    let validation = validation.with_publication_revision(revision.clone());
+    let approval = approval.with_publication_revision(revision);
     let reference = ObjectReference::new(source_id.as_str(), "record-sync").unwrap();
     let assigned_id =
         IndexAssignedId::generate(&TargetReferenceType::new("entity").unwrap(), &reference);

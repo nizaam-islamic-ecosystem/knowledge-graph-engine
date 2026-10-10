@@ -12,6 +12,7 @@ use crate::identity::AgentId;
 use crate::temporal::Instant;
 
 use super::mapping::{CandidateKey, MappedCandidate};
+use super::publication::SubgraphRevision;
 use super::raw::SourceClass;
 use super::validation::{ValidationResult, ValidationStatus};
 
@@ -226,6 +227,7 @@ pub struct ApprovalDecision {
     decided_at: Instant,
     curation: CurationOutcome,
     rationale: Option<String>,
+    publication_revision: Option<SubgraphRevision>,
 }
 
 impl ApprovalDecision {
@@ -251,7 +253,23 @@ impl ApprovalDecision {
             decided_at,
             curation,
             rationale,
+            publication_revision: None,
         })
+    }
+
+    /// Binds this human decision to the exact semantic subgraph reviewed.
+    ///
+    /// The publication gate rejects this decision if the proposed subgraph has changed.
+    #[must_use]
+    pub fn with_publication_revision(mut self, revision: SubgraphRevision) -> Self {
+        self.publication_revision = Some(revision);
+        self
+    }
+
+    /// Returns the exact-subgraph revision this decision applies to, when bound.
+    #[must_use]
+    pub fn publication_revision(&self) -> Option<&SubgraphRevision> {
+        self.publication_revision.as_ref()
     }
 
     /// Returns the target candidate.

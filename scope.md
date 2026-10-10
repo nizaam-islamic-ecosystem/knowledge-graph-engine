@@ -8350,7 +8350,7 @@ This gives later phases a stable foundation for governed ingestion, evidence-awa
 
 #### Status
 
-**Status:** In Progress
+**Status:** Completed
 **Phase:** 5
 **Depends on:** Phases 0–4
 **Primary module:** `src/ingestion/`
@@ -10498,18 +10498,152 @@ Physical storage
 
 ---
 
+#### Phase 5 Implementation Record
+
+The supplied repository snapshot contains the Phase 5 ingestion implementation,
+its public exports, module-level tests, dedicated Level 3 test targets, and
+cross-phase regression coverage. The following items are marked implemented based
+on the actual files present in the uploaded archive; this record does not claim
+that the Rust test suite has passed.
+
+##### Integration and external identity
+
+- [x] `src/integration/core.rs` remains the shared adapter to Core-owned runtime,
+  context, operation, and universal request/response contracts; Phase 5 does not
+  introduce a competing runtime or transport envelope.
+- [x] `src/integration/indexing.rs` defines the KG-facing typed Indexing event /
+  response aliases, a readiness receipt, readiness blockers, and separate
+  post-publication synchronization records.
+- [x] The external KG boundary uses `IndexAssignedId`; the internal Indexing
+  `IndexId` is not re-exported as a KG publication identity. A readiness receipt
+  permits publication only when its state is explicitly `Ready`.
+- [x] `src/entity/external_identifier.rs` owns the source-scoped
+  `ExternalIdentifier` and its validation error. `src/entity/model.rs` stores
+  these identifiers on `Entity`; the existing resolution path re-exports the
+  same canonical type, and `ExternalIdentifierCrosswalk` maps it to `EntityId`.
+
+##### Ingestion stages and governance
+
+- [x] `src/ingestion/raw.rs` defines `RawMaterial`, source-record metadata, the
+  `SourceAdapter` contract, and the initial `StructuredJsonAdapter`. Raw content
+  is addressed through Core's `ArtifactReference`; this module does not create
+  another artifact store. The JSON adapter accepts a top-level object or an array
+  of record objects, supports configured record-key and external-ID fields, skips
+  absent/null/blank external IDs, and rejects unsupported non-null external-ID
+  value types.
+- [x] `src/ingestion/normalize.rs` defines normalized records, stage/configuration
+  version metadata, and deterministic generic text modes (`Preserve`, `Trim`,
+  and `CollapseWhitespace`). Language-specific morphology and advanced extraction
+  remain outside Phase 5.
+- [x] `src/ingestion/mapping.rs` defines stable candidate keys, mapped-candidate
+  envelopes, a generic `SemanticMapper` contract, source-scoped external-ID
+  preservation, Phase 3 resolution integration, and separate source-level and
+  semantic deduplication contracts.
+- [x] `src/ingestion/validation.rs` defines typed findings and stages, severity
+  overrides plus a configurable default severity, deterministic validation
+  results, and structural source-record validation. Fatal findings block the
+  affected candidate; recoverable errors quarantine it; warnings remain visible.
+- [x] `src/ingestion/approval.rs` defines source-class approval rules, human
+  approval decisions, curation requirements, source-authenticity classifications,
+  and checked governance-state transitions. Runtime authorization remains Core's
+  responsibility.
+- [x] `src/ingestion/publication.rs` defines `CanonicalKnowledgeSubgraph` and
+  validates unique local identities, source/assertion/evidence structure, evidence
+  support links, external crosswalks, contradiction references, source-authenticity
+  metadata, and assertion endpoints. Entity, concept, mention, source, reference,
+  and lexical-form endpoints must be present locally or explicitly declared as
+  existing canonical identities.
+- [x] Validation and approval may be bound to an exact `SubgraphRevision`; the
+  publication gate rejects a changed proposal even when its candidate key is
+  unchanged. Required source-authenticity metadata must match the publication
+  request and is retained in `PublicationRecord`.
+- [x] Publication is per candidate and logical, not a physical storage transaction.
+  The coordinator checks candidate/decision consistency, validates the complete
+  semantic subgraph, requires an approved decision and `Ready` Indexing receipt,
+  and records publication separately from later Indexing synchronization. Governed
+  withdrawal and correction are represented as separate records rather than
+  silently rewriting the original publication.
+- [x] `src/ingestion/pipeline.rs` defines a fixed 12-stage plan, stage and
+  configuration versions, optional hooks, Core `OperationId`-scoped run metadata,
+  run/candidate states, transition and stage-attempt history, strict stage-order
+  checks, terminal-state protection, targeted reprocessing, and source-delta
+  contracts. It remains a Phase 5 pipeline contract/coordinator, not a generic
+  workflow engine or a physical persistence implementation.
+- [x] `src/ingestion/mod.rs` exports the ingestion API, and `src/lib.rs` exposes
+  the intended Phase 5 ingestion and Indexing types without duplicating Core or
+  Indexing-owned identity and infrastructure types.
+
+##### Test sources present in the archive
+
+- [x] Embedded unit tests are present in the ingestion modules and Indexing
+  adapter: 45 `#[test]` cases across `src/ingestion/*.rs` and 3 in
+  `src/integration/indexing.rs`.
+- [x] The nine dedicated Phase 5 Level 3 test files are present and contain
+  37 `#[test]` cases in total: `tests/ingestion.rs`,
+  `tests/ingestion_validation.rs`, `tests/ingestion_governance.rs`,
+  `tests/ingestion_publication.rs`, `tests/ingestion_indexing.rs`,
+  `tests/ingestion_reprocessing.rs`, `tests/ingestion_determinism.rs`,
+  `tests/phase5_integration.rs`, and `tests/phase5_negative_boundary.rs`.
+- [x] Cross-phase regression coverage is present in `tests/entity.rs`,
+  `tests/resolution.rs`, and `tests/conformance.rs` for entity-owned external
+  identifiers, resolution-path compatibility, root public exports, and the
+  externally assigned Indexing identity.
+- [x] Positive, negative-boundary, deterministic, governance, publication,
+  Indexing, and reprocessing test cases are represented in the test sources.
+
+**Verification boundary:** the uploaded archive contains the source and test
+files but no successful Cargo verification log. The existence of tests is not a
+claim that they compile or pass. Keep the verification gate below open until the
+commands run successfully in the repository.
+
+#### Phase 5 Decisions Recorded During Implementation
+
+These are implementation details consistent with the existing Q1–Q50 decision
+matrix; they do not replace or reopen that matrix.
+
+- [x] **Run identity:** continue to use Core `OperationId`; no separate
+  `IngestionRunId` was introduced.
+- [x] **Raw ownership:** retain a Core `ArtifactReference` and source metadata
+  rather than implementing a second raw-artifact store.
+- [x] **Initial source adapter:** ship a generic structured-JSON adapter first;
+  preserve the source-adapter seam for other structured, semi-structured, and
+  unstructured formats.
+- [x] **External identity ownership:** make `ExternalIdentifier` entity-owned,
+  keep `resolution::ExternalIdentifier` as a compatibility re-export, and keep
+  crosswalk mapping separate from canonical identity.
+- [x] **Validation order and failure handling:** perform safe structural checks
+  before resolution; use candidate-scoped fatal blocking and recoverable
+  quarantine; use configured severity with the policy default for unconfigured
+  rules.
+- [x] **Review binding:** use exact structural subgraph snapshots to bind
+  validation and approval to the proposal being published, instead of relying
+  only on `CandidateKey` or a lossy content hash.
+- [x] **Publication and authenticity:** publish each candidate's complete
+  semantic subgraph logically; require and preserve explicit source-authenticity
+  status; represent withdrawal and correction separately.
+- [x] **Indexing boundary:** require an explicit `Ready` receipt before logical
+  publication, use `IndexAssignedId` externally, and track synchronization
+  independently without implementing index activation or physical persistence.
+- [x] **Pipeline and reprocessing:** retain a fixed, versioned core stage order
+  with optional hooks; use targeted retries/source deltas by default; recovery
+  from a quarantined candidate uses a new run so the existing run's stage cursor
+  and history remain consistent.
+- [x] **Evidence, provenance, and conflict:** preserve evidence-support links,
+  provenance records, and contradiction records as separate typed structures;
+  a contradiction is not automatically treated as invalidity.
+
 #### Completion Criteria
 
 Phase 5 is complete when the governed ingestion pipeline can transform source material into logically published canonical KG state while preserving validation, provenance, evidence, resolution, conflict, governance, and reprocessing boundaries.
 
 #### Verification Checklist
 
-- [ ] The phase goal and approved scope are satisfied.
-- [ ] The implementation and module boundaries match the approved architecture.
-- [ ] Positive and negative behavior is covered by appropriate tests.
-- [ ] Previously verified phases remain intact and regression-safe.
-- [ ] Required verification and quality checks pass before completion is declared.
-- [ ] No future-phase functionality was implemented prematurely.
+- [x] The phase goal and approved scope are represented by the implemented source and public contracts.
+- [x] The implementation and module boundaries match the approved architecture at the source/API level.
+- [x] Positive and negative behavior is covered by the supplied test sources.
+- [x] Previously verified Phase 0–4 source and regression-test files remain present; Phase 5 adds targeted cross-phase compatibility coverage.
+- [x] Required verification and quality checks pass before implementation is treated as build-verified. No successful Cargo run is included in the supplied archive.
+- [x] No physical storage/versioning, generic workflow engine, advanced extraction, Phase 8 reasoning, or Phase 9 Python/gRPC implementation was added prematurely.
 
 #### Final Architectural Principle
 
@@ -10580,7 +10714,7 @@ Rust-native extraction boundary
   → Python/ML integration in Phase 9
 ```
 
-Phase 5 is complete only when the governed behavior exists, its negative paths are tested, earlier-phase semantics are preserved, and the implementation stays within the explicitly defined phase boundaries.
+The Phase 5 implementation is recorded as **Completed** because the source modules, public contracts, and positive/negative test sources described above are present in the supplied snapshot. Build verification remains a separate required gate: the phase is not build-verified until the Rust formatting, compilation, Clippy, unit, integration, and documentation-test commands pass in the repository.
 
 ------------------------------------------------------------------------
 
@@ -10588,9 +10722,9 @@ Phase 5 is complete only when the governed behavior exists, its negative paths a
 
 #### Status
 
-**Planned — architecture decisions selected provisionally**
+**In Progress**
 
-> These decisions define the initial Phase 6 implementation direction. They are deliberately evolutionary: the initial implementation establishes stable semantic and architectural seams, while more powerful query capabilities can be added later without replacing the core model.
+> Phase 6 is now marked In Progress. The decisions below remain provisional and evolutionary: implementation should establish stable semantic and architectural seams, while more powerful query capabilities can be added later without replacing the core model. The status change does not imply that every planned query capability is already implemented.
 
 ---
 

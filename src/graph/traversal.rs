@@ -47,6 +47,8 @@ impl fmt::Display for TraversalDirection {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TraversalBounds {
     max_depth: usize,
+    max_edges: usize,
+    max_results: usize,
 }
 
 impl TraversalBounds {
@@ -56,13 +58,43 @@ impl TraversalBounds {
     /// starting node. There is deliberately no unbounded/default constructor.
     #[must_use]
     pub const fn new(max_depth: usize) -> Self {
-        Self { max_depth }
+        Self {
+            max_depth,
+            max_edges: usize::MAX,
+            max_results: usize::MAX,
+        }
     }
 
-    /// Returns the maximum number of traversed edges.
+    /// Replaces the maximum number of edge expansions performed by bounded traversal.
+    #[must_use]
+    pub const fn with_max_edges(mut self, max_edges: usize) -> Self {
+        self.max_edges = max_edges;
+        self
+    }
+
+    /// Replaces the maximum number of paths returned by bounded traversal.
+    #[must_use]
+    pub const fn with_max_results(mut self, max_results: usize) -> Self {
+        self.max_results = max_results;
+        self
+    }
+
+    /// Returns the maximum traversal depth.
     #[must_use]
     pub const fn max_depth(self) -> usize {
         self.max_depth
+    }
+
+    /// Returns the maximum number of edge expansions.
+    #[must_use]
+    pub const fn max_edges(self) -> usize {
+        self.max_edges
+    }
+
+    /// Returns the maximum number of paths returned.
+    #[must_use]
+    pub const fn max_results(self) -> usize {
+        self.max_results
     }
 }
 
@@ -270,42 +302,67 @@ where
     }
 
     let mut results = Vec::new();
+    let mut edge_work = 0;
     let root = TraversalPath::new(start.clone());
 
     visit_paths(
         graph,
         direction,
         bounds.max_depth(),
+        bounds.max_edges(),
+        bounds.max_results(),
         &mut resolve,
         root,
         &mut results,
+        &mut edge_work,
     )?;
 
     Ok(results)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn visit_paths<F>(
     graph: &Graph,
     direction: TraversalDirection,
     max_depth: usize,
+    max_edges: usize,
+    max_results: usize,
     resolve: &mut F,
     path: TraversalPath,
     results: &mut Vec<TraversalPath>,
+    edge_work: &mut usize,
 ) -> Result<(), TraversalError>
 where
     F: FnMut(&GraphEdge) -> Result<(KnowledgeAssertion, Relationship), TraversalError>,
 {
+    if results.len() >= max_results {
+        return Ok(());
+    }
+
     results.push(path.clone());
 
-    if path.len() >= max_depth {
+    if path.len() >= max_depth || results.len() >= max_results || *edge_work >= max_edges {
         return Ok(());
     }
 
     let current = path.end().clone();
 
     for edge in graph.incident_edges(&current) {
+        if *edge_work >= max_edges || results.len() >= max_results {
+            break;
+        }
+        *edge_work += 1;
+
         let (assertion, relationship) = resolve(edge)?;
-        let step = traverse(edge, &assertion, &relationship, direction)?;
+        let step = match traverse(edge, &assertion, &relationship, direction) {
+            Ok(step) => step,
+            Err(TraversalError::ReverseTraversalUnavailable)
+                if direction == TraversalDirection::Inverse =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
 
         if step.source() != &current
             || step.target() == path.start()
@@ -321,7 +378,17 @@ where
             .map_err(|_error| TraversalError::ResolutionUnavailable {
                 assertion_id: edge.assertion_id().clone(),
             })?;
-        visit_paths(graph, direction, max_depth, resolve, next, results)?;
+        visit_paths(
+            graph,
+            direction,
+            max_depth,
+            max_edges,
+            max_results,
+            resolve,
+            next,
+            results,
+            edge_work,
+        )?;
     }
 
     Ok(())
@@ -658,6 +725,173 @@ mod tests {
                 node_id: start.id().clone(),
             }
         );
+    }
+
+    #[test]
+    fn bounded_traversal_respects_result_and_edge_work_limits_when_branches_rejoin() {
+        let mut graph = Graph::new();
+        let first = assertion("entity-1", "entity-2", "first");
+        let second = assertion("entity-1", "entity-3", "second");
+        let third = assertion("entity-2", "entity-4", "third");
+        let fourth = assertion("entity-3", "entity-4", "fourth");
+
+        for item in [&first, &second, &third, &fourth] {
+            graph.add_assertion(item).expect("edge should be added");
+        }
+
+        let mut semantics = BTreeMap::new();
+        for item in [
+            (first, "first"),
+            (second, "second"),
+            (third, "third"),
+            (fourth, "fourth"),
+        ] {
+            semantics.insert(
+                item.0.id().clone(),
+                (
+                    item.0,
+                    relationship(item.1, RelationshipDirection::SubjectToObject),
+                ),
+            );
+        }
+
+        let start = graph
+            .node_for_reference(&AssertionObject::Entity(entity("entity-1")))
+            .expect("start node")
+            .id()
+            .clone();
+
+        let result_limited = traverse_bounded(
+            &graph,
+            &start,
+            TraversalDirection::Forward,
+            TraversalBounds::new(2).with_max_results(3),
+            |edge| {
+                semantics.get(edge.assertion_id()).cloned().ok_or_else(|| {
+                    TraversalError::ResolutionUnavailable {
+                        assertion_id: edge.assertion_id().clone(),
+                    }
+                })
+            },
+        )
+        .expect("result-limited traversal should succeed");
+        assert_eq!(result_limited.len(), 3);
+
+        let edge_work = std::cell::Cell::new(0);
+        let edge_limited = traverse_bounded(
+            &graph,
+            &start,
+            TraversalDirection::Forward,
+            TraversalBounds::new(2).with_max_edges(3),
+            |edge| {
+                edge_work.set(edge_work.get() + 1);
+                semantics.get(edge.assertion_id()).cloned().ok_or_else(|| {
+                    TraversalError::ResolutionUnavailable {
+                        assertion_id: edge.assertion_id().clone(),
+                    }
+                })
+            },
+        )
+        .expect("edge-limited traversal should succeed");
+        assert_eq!(edge_work.get(), 3);
+        assert!(edge_limited.len() <= 4);
+        assert!(edge_limited.iter().all(|path| path.len() <= 2));
+    }
+
+    #[test]
+    fn inverse_bounded_traversal_skips_non_invertible_edges_but_propagates_other_errors() {
+        let mut graph = Graph::new();
+        let invertible = assertion("entity-1", "entity-2", "has-name");
+        let non_invertible = assertion("entity-3", "entity-2", "related-to");
+        graph.add_assertion(&invertible).expect("invertible edge");
+        graph
+            .add_assertion(&non_invertible)
+            .expect("non-invertible edge");
+
+        let invertible_relationship =
+            relationship("has-name", RelationshipDirection::SubjectToObject)
+                .with_inverse_predicate(
+                    RelationshipPredicate::new("name-of").expect("valid inverse predicate"),
+                )
+                .expect("valid inverse");
+        let non_invertible_relationship =
+            relationship("related-to", RelationshipDirection::SubjectToObject);
+
+        let mut semantics = BTreeMap::new();
+        semantics.insert(
+            invertible.id().clone(),
+            (invertible.clone(), invertible_relationship),
+        );
+        semantics.insert(
+            non_invertible.id().clone(),
+            (non_invertible.clone(), non_invertible_relationship),
+        );
+
+        let start = graph
+            .node_for_reference(&AssertionObject::Entity(entity("entity-2")))
+            .expect("start node")
+            .id()
+            .clone();
+        let results = traverse_bounded(
+            &graph,
+            &start,
+            TraversalDirection::Inverse,
+            TraversalBounds::new(1),
+            |edge| {
+                semantics.get(edge.assertion_id()).cloned().ok_or_else(|| {
+                    TraversalError::ResolutionUnavailable {
+                        assertion_id: edge.assertion_id().clone(),
+                    }
+                })
+            },
+        )
+        .expect("non-invertible edge should be skipped");
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[1].steps()[0].assertion_id(), invertible.id());
+
+        let error = traverse_bounded(
+            &graph,
+            &start,
+            TraversalDirection::Inverse,
+            TraversalBounds::new(1),
+            |edge| {
+                if edge.assertion_id() == invertible.id() {
+                    Err(TraversalError::AssertionMismatch)
+                } else {
+                    semantics.get(edge.assertion_id()).cloned().ok_or_else(|| {
+                        TraversalError::ResolutionUnavailable {
+                            assertion_id: edge.assertion_id().clone(),
+                        }
+                    })
+                }
+            },
+        )
+        .expect_err("assertion mismatch must propagate");
+        assert_eq!(error, TraversalError::AssertionMismatch);
+
+        let error = traverse_bounded(
+            &graph,
+            &start,
+            TraversalDirection::Inverse,
+            TraversalBounds::new(1),
+            |edge| {
+                if edge.assertion_id() == invertible.id() {
+                    Ok((
+                        invertible.clone(),
+                        relationship("other-predicate", RelationshipDirection::SubjectToObject),
+                    ))
+                } else {
+                    semantics.get(edge.assertion_id()).cloned().ok_or_else(|| {
+                        TraversalError::ResolutionUnavailable {
+                            assertion_id: edge.assertion_id().clone(),
+                        }
+                    })
+                }
+            },
+        )
+        .expect_err("predicate mismatch must propagate");
+        assert!(matches!(error, TraversalError::PredicateMismatch { .. }));
     }
 
     #[test]

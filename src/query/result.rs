@@ -543,10 +543,21 @@ impl QueryResultItem {
     #[must_use]
     pub fn cursor_token(&self) -> String {
         format!(
-            "score={};reference={}",
+            "score={};reference={};match={};path={}",
             self.ranking.score(),
-            self.reference.stable_key()
+            self.reference.stable_key(),
+            self.match_type,
+            traversal_path_key(self.path.as_ref()),
         )
+    }
+
+    /// Creates a continuation token with a deterministic occurrence position.
+    ///
+    /// The position disambiguates otherwise identical result items while the
+    /// stable item fields still make a cursor tied to the expected result set.
+    #[must_use]
+    pub(crate) fn cursor_token_with_position(&self, position: usize) -> String {
+        format!("{};position={position}", self.cursor_token())
     }
 }
 
@@ -756,6 +767,25 @@ impl fmt::Display for ResultExplanationError {
 
 impl std::error::Error for ResultExplanationError {}
 
+pub(crate) fn traversal_path_key(path: Option<&crate::graph::TraversalPath>) -> String {
+    let Some(path) = path else {
+        return "none".to_owned();
+    };
+
+    path.steps()
+        .iter()
+        .map(|step| {
+            format!(
+                "{}:{}:{}",
+                step.assertion_id().as_str(),
+                step.traversal_direction(),
+                step.predicate().as_str(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
 fn validate_text(value: &str, _field: &'static str) -> Result<(), ResultExplanationError> {
     if value.trim().is_empty() {
         return Err(ResultExplanationError::EmptyText);
@@ -765,8 +795,13 @@ fn validate_text(value: &str, _field: &'static str) -> Result<(), ResultExplanat
 
 #[cfg(test)]
 mod tests {
-    use super::{InferenceStatus, QueryMatchCandidate, QueryMatchType, QueryReference};
+    use super::{
+        InferenceStatus, QueryMatchCandidate, QueryMatchType, QueryReference, QueryResultItem,
+        RankingMetadata,
+    };
+    use crate::RankingProfile;
     use crate::identity::KnowledgeAssertionId;
+    use std::collections::BTreeMap;
 
     #[test]
     fn query_reference_stable_keys_are_type_qualified() {
@@ -774,6 +809,82 @@ mod tests {
             KnowledgeAssertionId::new("assertion-result").expect("valid assertion"),
         );
         assert_eq!(reference.stable_key(), "assertion:assertion-result");
+    }
+
+    #[test]
+    fn cursor_tokens_distinguish_paths_for_the_same_reference_and_score() {
+        use crate::assertion::{
+            AssertionContext, AssertionObject, AssertionPolarity, AssertionPredicate,
+            AssertionStatus, KnowledgeAssertion, Qualifiers,
+        };
+        use crate::graph::{GraphEdge, GraphNode, TraversalDirection, traverse};
+        use crate::identity::EntityId;
+        use crate::relationship::{
+            Relationship, RelationshipCharacteristics, RelationshipDirection, RelationshipFamily,
+            RelationshipPredicate,
+        };
+
+        let assertion_a = KnowledgeAssertion::new(
+            AssertionObject::Entity(EntityId::new("path-a").unwrap()),
+            AssertionPredicate::new("knows").unwrap(),
+            AssertionObject::Entity(EntityId::new("shared-end").unwrap()),
+            AssertionContext::new(),
+            Qualifiers::new(),
+            AssertionStatus::Accepted,
+            AssertionPolarity::Positive,
+        );
+        let assertion_b = KnowledgeAssertion::new(
+            AssertionObject::Entity(EntityId::new("path-b").unwrap()),
+            AssertionPredicate::new("knows").unwrap(),
+            AssertionObject::Entity(EntityId::new("shared-end").unwrap()),
+            AssertionContext::new(),
+            Qualifiers::new(),
+            AssertionStatus::Accepted,
+            AssertionPolarity::Positive,
+        );
+        let source_a = GraphNode::new(assertion_a.subject().clone());
+        let target_a = GraphNode::new(assertion_a.object().clone());
+        let source_b = GraphNode::new(assertion_b.subject().clone());
+        let target_b = GraphNode::new(assertion_b.object().clone());
+        let edge_a = GraphEdge::new(&assertion_a, &source_a, &target_a).unwrap();
+        let edge_b = GraphEdge::new(&assertion_b, &source_b, &target_b).unwrap();
+        let relationship = Relationship::new(
+            RelationshipPredicate::new("knows").unwrap(),
+            RelationshipFamily::new(RelationshipFamily::SEMANTIC).unwrap(),
+            RelationshipDirection::SubjectToObject,
+            RelationshipCharacteristics::new(),
+        );
+        let step_a = traverse(
+            &edge_a,
+            &assertion_a,
+            &relationship,
+            TraversalDirection::Forward,
+        )
+        .unwrap();
+        let step_b = traverse(
+            &edge_b,
+            &assertion_b,
+            &relationship,
+            TraversalDirection::Forward,
+        )
+        .unwrap();
+
+        let reference = QueryReference::Object(assertion_a.object().clone());
+        let ranking = RankingMetadata::new(RankingProfile::General, 100, BTreeMap::new());
+        let first = QueryResultItem::from_candidate(
+            QueryMatchCandidate::new(reference.clone(), QueryMatchType::Traversal).with_path(
+                crate::graph::TraversalPath::from_steps(step_a.source().clone(), [step_a]).unwrap(),
+            ),
+            ranking.clone(),
+        );
+        let second = QueryResultItem::from_candidate(
+            QueryMatchCandidate::new(reference, QueryMatchType::Traversal).with_path(
+                crate::graph::TraversalPath::from_steps(step_b.source().clone(), [step_b]).unwrap(),
+            ),
+            ranking,
+        );
+
+        assert_ne!(first.cursor_token(), second.cursor_token());
     }
 
     #[test]

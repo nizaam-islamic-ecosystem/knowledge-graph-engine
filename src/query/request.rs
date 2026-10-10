@@ -299,7 +299,7 @@ impl TraversalBudget {
         self.max_expansion
     }
 
-    fn validate(self) -> Result<(), QueryValidationError> {
+    pub(crate) fn validate(self) -> Result<(), QueryValidationError> {
         if self.max_nodes == 0 {
             return Err(QueryValidationError::ZeroBudget("max_nodes"));
         }
@@ -345,7 +345,7 @@ pub enum RetrievalTarget {
 }
 
 impl RetrievalTarget {
-    fn validate(&self) -> Result<(), QueryValidationError> {
+    pub(crate) fn validate(&self) -> Result<(), QueryValidationError> {
         if let Self::Text(value) = self
             && value.trim().is_empty()
         {
@@ -661,7 +661,7 @@ impl Pagination {
         self.ordering
     }
 
-    fn validate(&self) -> Result<(), QueryValidationError> {
+    pub(crate) fn validate(&self) -> Result<(), QueryValidationError> {
         if self.limit == 0 {
             return Err(QueryValidationError::ZeroLimit);
         }
@@ -839,7 +839,7 @@ impl VisibilityProfile {
         &self.allowed_statuses
     }
 
-    fn validate(&self) -> Result<(), QueryValidationError> {
+    pub(crate) fn validate(&self) -> Result<(), QueryValidationError> {
         if self.name.trim().is_empty() {
             return Err(QueryValidationError::EmptyVisibilityProfile);
         }

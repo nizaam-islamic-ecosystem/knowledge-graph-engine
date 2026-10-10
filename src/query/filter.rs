@@ -175,7 +175,7 @@ impl TemporalFilter {
             Self::ValidAt(instant) => match validity.value() {
                 TemporalValue::Instant(value) => value == instant,
                 TemporalValue::Interval(interval) => interval.contains(instant) == Some(true),
-                TemporalValue::Approximate(value) => value.center() == instant,
+                TemporalValue::Approximate(_) => false,
                 TemporalValue::OpenEnded(value) => value.interval().contains(instant) == Some(true),
                 TemporalValue::Unknown => false,
             },
@@ -383,6 +383,29 @@ mod tests {
 
         assert!(entity_filter.matches(&candidate));
         assert!(temporal.matches(&candidate));
+    }
+
+    #[test]
+    fn valid_at_does_not_treat_approximate_time_as_exact() {
+        use crate::temporal::{Approximate, TemporalValue};
+
+        let validity = TemporalValidity::new(TemporalValue::Approximate(Approximate::new(
+            Instant::from_unix_seconds(100),
+        )));
+        let filter = Filter::Temporal(TemporalFilter::ValidAt(Instant::from_unix_seconds(100)));
+
+        assert!(
+            !filter.matches(
+                &QueryMatchCandidate::new(
+                    QueryReference::Assertion(
+                        crate::identity::KnowledgeAssertionId::new("assertion-approximate")
+                            .unwrap(),
+                    ),
+                    QueryMatchType::Semantic,
+                )
+                .with_validity(validity),
+            )
+        );
     }
 
     #[test]

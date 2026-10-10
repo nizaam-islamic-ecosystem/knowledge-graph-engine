@@ -12,7 +12,9 @@ use nizaam_core::operation::OperationContext;
 use super::plan::{IndexAccessRequirement, QueryOperator, QueryPlan};
 use super::ranking::{DeterministicRankingProvider, RankedCandidate, RankingProvider};
 use super::request::{QueryOrdering, ReasoningProfile};
-use super::result::{QueryExplanation, QueryMatchCandidate, QueryResult, QueryResultItem};
+use super::result::{
+    QueryExplanation, QueryMatchCandidate, QueryResult, QueryResultItem, traversal_path_key,
+};
 
 /// Semantic data-access boundary consumed by the query executor.
 ///
@@ -31,6 +33,10 @@ pub trait QueryAccess {
     ) -> Result<Vec<QueryMatchCandidate>, Self::Error>;
 
     /// Performs bounded graph traversal for the supplied logical traversal plan.
+    ///
+    /// Implementations must enforce every field of the plan's [`super::request::TraversalBudget`],
+    /// including node, edge, result, and expansion limits, rather than treating
+    /// the graph-layer bounds as the complete query budget.
     fn traverse(
         &self,
         plan: &super::plan::TraversalPlan,
@@ -107,12 +113,13 @@ where
     let start = if let Some(cursor) = plan.pagination().cursor() {
         let position = ranked
             .iter()
-            .position(|candidate| {
+            .enumerate()
+            .position(|(position, candidate)| {
                 QueryResultItem::from_candidate(
                     candidate.candidate.clone(),
                     candidate.ranking.clone(),
                 )
-                .cursor_token()
+                .cursor_token_with_position(position)
                     == cursor
             })
             .ok_or_else(|| QueryExecutionError::InvalidCursor(cursor.to_owned()))?;
@@ -138,7 +145,8 @@ where
         let last = page
             .last()
             .expect("a non-empty page is required when another page exists");
-        QueryResultItem::from_candidate(last.candidate.clone(), last.ranking.clone()).cursor_token()
+        QueryResultItem::from_candidate(last.candidate.clone(), last.ranking.clone())
+            .cursor_token_with_position(start + page.len() - 1)
     });
 
     let items = page
@@ -246,6 +254,10 @@ fn sort_ranked(ranked: &mut [RankedCandidate], ordering: QueryOrdering) {
                     .reference()
                     .stable_key()
                     .cmp(&right.candidate.reference().stable_key())
+            })
+            .then_with(|| {
+                traversal_path_key(left.candidate.path())
+                    .cmp(&traversal_path_key(right.candidate.path()))
             }),
         QueryOrdering::PathLengthAscending => left
             .candidate
@@ -258,13 +270,21 @@ fn sort_ranked(ranked: &mut [RankedCandidate], ordering: QueryOrdering) {
                     .reference()
                     .stable_key()
                     .cmp(&right.candidate.reference().stable_key())
+            })
+            .then_with(|| {
+                traversal_path_key(left.candidate.path())
+                    .cmp(&traversal_path_key(right.candidate.path()))
             }),
         QueryOrdering::ReferenceAscending => left
             .candidate
             .reference()
             .stable_key()
             .cmp(&right.candidate.reference().stable_key())
-            .then_with(|| right.ranking.score().cmp(&left.ranking.score())),
+            .then_with(|| right.ranking.score().cmp(&left.ranking.score()))
+            .then_with(|| {
+                traversal_path_key(left.candidate.path())
+                    .cmp(&traversal_path_key(right.candidate.path()))
+            }),
     });
 }
 
@@ -341,8 +361,34 @@ mod tests {
 
     impl std::error::Error for AccessError {}
 
-    #[derive(Default)]
-    struct FakeAccess;
+    struct FakeAccess {
+        candidates: Vec<QueryMatchCandidate>,
+    }
+
+    impl Default for FakeAccess {
+        fn default() -> Self {
+            Self {
+                candidates: vec![
+                    QueryMatchCandidate::new(
+                        QueryReference::Assertion(
+                            KnowledgeAssertionId::new("assertion-execution-a").unwrap(),
+                        ),
+                        QueryMatchType::Lexical,
+                    )
+                    .with_publication(PublicationOutcome::Published)
+                    .with_inference_status(InferenceStatus::Observed),
+                    QueryMatchCandidate::new(
+                        QueryReference::Assertion(
+                            KnowledgeAssertionId::new("assertion-execution-b").unwrap(),
+                        ),
+                        QueryMatchType::Lexical,
+                    )
+                    .with_publication(PublicationOutcome::Published)
+                    .with_inference_status(InferenceStatus::Observed),
+                ],
+            }
+        }
+    }
 
     impl QueryAccess for FakeAccess {
         type Error = AccessError;
@@ -368,24 +414,7 @@ mod tests {
             _plan: &crate::query::RetrievalPlan,
             _context: &OperationContext,
         ) -> Result<Vec<QueryMatchCandidate>, Self::Error> {
-            Ok(vec![
-                QueryMatchCandidate::new(
-                    QueryReference::Assertion(
-                        KnowledgeAssertionId::new("assertion-execution-a").unwrap(),
-                    ),
-                    QueryMatchType::Lexical,
-                )
-                .with_publication(PublicationOutcome::Published)
-                .with_inference_status(InferenceStatus::Observed),
-                QueryMatchCandidate::new(
-                    QueryReference::Assertion(
-                        KnowledgeAssertionId::new("assertion-execution-b").unwrap(),
-                    ),
-                    QueryMatchType::Lexical,
-                )
-                .with_publication(PublicationOutcome::Published)
-                .with_inference_status(InferenceStatus::Observed),
-            ])
+            Ok(self.candidates.clone())
         }
     }
 
@@ -400,7 +429,8 @@ mod tests {
     fn executor_returns_reference_oriented_explainable_results() {
         let request = QueryRequest::Retrieval(RetrievalRequest::lexical("sabr"));
         let plan = plan(&request).expect("retrieval should plan");
-        let result = execute(&FakeAccess, &plan, &context()).expect("execution should succeed");
+        let result =
+            execute(&FakeAccess::default(), &plan, &context()).expect("execution should succeed");
 
         assert_eq!(result.items().len(), 2);
         assert_eq!(
@@ -418,7 +448,7 @@ mod tests {
         let request =
             QueryRequest::Retrieval(RetrievalRequest::lexical("sabr").with_options(options));
         let plan = plan(&request).expect("planning should preserve reasoning intent");
-        let error = execute(&FakeAccess, &plan, &context())
+        let error = execute(&FakeAccess::default(), &plan, &context())
             .expect_err("phase 6 must not silently execute phase 8 reasoning");
 
         assert!(matches!(
@@ -430,14 +460,93 @@ mod tests {
     }
 
     #[test]
+    fn cursor_pagination_distinguishes_duplicate_references_with_different_paths() {
+        use crate::assertion::{
+            AssertionContext, AssertionObject, AssertionPolarity, AssertionPredicate,
+            AssertionStatus, KnowledgeAssertion, Qualifiers,
+        };
+        use crate::graph::{GraphEdge, GraphNode, TraversalDirection, TraversalPath, traverse};
+        use crate::relationship::{
+            Relationship, RelationshipCharacteristics, RelationshipDirection, RelationshipFamily,
+            RelationshipPredicate,
+        };
+
+        let make_candidate = |source: &str| {
+            let assertion = KnowledgeAssertion::new(
+                AssertionObject::Entity(crate::identity::EntityId::new(source).unwrap()),
+                AssertionPredicate::new("knows").unwrap(),
+                AssertionObject::Entity(crate::identity::EntityId::new("shared-result").unwrap()),
+                AssertionContext::new(),
+                Qualifiers::new(),
+                AssertionStatus::Accepted,
+                AssertionPolarity::Positive,
+            );
+            let source_node = GraphNode::new(assertion.subject().clone());
+            let target_node = GraphNode::new(assertion.object().clone());
+            let edge = GraphEdge::new(&assertion, &source_node, &target_node).unwrap();
+            let relationship = Relationship::new(
+                RelationshipPredicate::new("knows").unwrap(),
+                RelationshipFamily::new(RelationshipFamily::SEMANTIC).unwrap(),
+                RelationshipDirection::SubjectToObject,
+                RelationshipCharacteristics::new(),
+            );
+            let step = traverse(
+                &edge,
+                &assertion,
+                &relationship,
+                TraversalDirection::Forward,
+            )
+            .unwrap();
+            QueryMatchCandidate::new(
+                QueryReference::Object(assertion.object().clone()),
+                QueryMatchType::Traversal,
+            )
+            .with_publication(PublicationOutcome::Published)
+            .with_path(TraversalPath::from_steps(step.source().clone(), [step]).unwrap())
+        };
+
+        let candidates = vec![make_candidate("path-a"), make_candidate("path-b")];
+        let access = FakeAccess { candidates };
+        let options =
+            crate::query::QueryOptions::new().with_pagination(crate::query::Pagination::new(1));
+        let request = QueryRequest::Retrieval(
+            RetrievalRequest::semantic(crate::query::RetrievalTarget::Text("paths".to_owned()))
+                .with_options(options),
+        );
+        let first_plan = plan(&request).expect("first page should plan");
+        let first = execute(&access, &first_plan, &context()).expect("first page should execute");
+        let cursor = first
+            .next_cursor()
+            .expect("first page should expose a cursor")
+            .to_owned();
+
+        let second_options = crate::query::QueryOptions::new()
+            .with_pagination(crate::query::Pagination::new(1).with_cursor(cursor));
+        let second_request = QueryRequest::Retrieval(
+            RetrievalRequest::semantic(crate::query::RetrievalTarget::Text("paths".to_owned()))
+                .with_options(second_options),
+        );
+        let second_plan = plan(&second_request).expect("second page should plan");
+        let second =
+            execute(&access, &second_plan, &context()).expect("second page should execute");
+
+        assert_eq!(first.items()[0].reference(), second.items()[0].reference());
+        assert_ne!(
+            first.items()[0].path().unwrap(),
+            second.items()[0].path().unwrap(),
+        );
+        assert!(second.next_cursor().is_none());
+    }
+
+    #[test]
     fn cursor_pagination_is_deterministic() {
         let first_options =
             crate::query::QueryOptions::new().with_pagination(crate::query::Pagination::new(1));
         let first_request =
             QueryRequest::Retrieval(RetrievalRequest::lexical("sabr").with_options(first_options));
         let first_plan = plan(&first_request).expect("first page should plan");
-        let first =
-            execute(&FakeAccess, &first_plan, &context()).expect("first page should execute");
+        let first = execute(&FakeAccess::default(), &first_plan, &context())
+            .expect("first page should execute");
         let cursor = first
             .next_cursor()
             .expect("first page should expose a cursor")
@@ -448,8 +557,8 @@ mod tests {
         let second_request =
             QueryRequest::Retrieval(RetrievalRequest::lexical("sabr").with_options(second_options));
         let second_plan = plan(&second_request).expect("second page should plan");
-        let second =
-            execute(&FakeAccess, &second_plan, &context()).expect("second page should execute");
+        let second = execute(&FakeAccess::default(), &second_plan, &context())
+            .expect("second page should execute");
 
         assert_eq!(
             first.items()[0].reference().stable_key(),

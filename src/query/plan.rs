@@ -104,7 +104,9 @@ impl TraversalPlan {
         direction: TraversalDirection,
         budget: TraversalBudget,
     ) -> Self {
-        let graph_bounds = TraversalBounds::new(budget.max_depth());
+        let graph_bounds = TraversalBounds::new(budget.max_depth())
+            .with_max_edges(budget.max_edges())
+            .with_max_results(budget.max_results());
         Self {
             start,
             predicate,
@@ -142,6 +144,10 @@ impl TraversalPlan {
     #[must_use]
     pub const fn graph_bounds(&self) -> TraversalBounds {
         self.graph_bounds
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), super::request::QueryValidationError> {
+        self.budget.validate()
     }
 }
 
@@ -184,6 +190,21 @@ impl RetrievalPlan {
     #[must_use]
     pub const fn expansion(&self) -> SemanticExpansion {
         self.expansion
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), super::request::QueryValidationError> {
+        self.target.validate()?;
+        if self.mode == RetrievalMode::Conceptual
+            && !matches!(self.target, RetrievalTarget::Concept(_))
+        {
+            return Err(super::request::QueryValidationError::TargetModeMismatch);
+        }
+        if self.mode == RetrievalMode::Relational
+            && !matches!(self.target, RetrievalTarget::Relationship(_))
+        {
+            return Err(super::request::QueryValidationError::TargetModeMismatch);
+        }
+        Ok(())
     }
 }
 
@@ -277,12 +298,22 @@ impl QueryPlan {
 
     /// Validates the logical plan's structural invariants.
     pub fn validate(&self) -> Result<(), PlanValidationError> {
+        if self.ranking.name().trim().is_empty() {
+            return Err(PlanValidationError::EmptyRankingProfile);
+        }
+
         self.filter
             .validate()
             .map_err(PlanValidationError::InvalidFilter)?;
         if self.pagination.limit() == 0 {
             return Err(PlanValidationError::ZeroLimit);
         }
+        self.pagination
+            .validate()
+            .map_err(PlanValidationError::InvalidRequest)?;
+        self.visibility
+            .validate()
+            .map_err(PlanValidationError::InvalidRequest)?;
         validate_operator(&self.operator)
     }
 }
@@ -296,6 +327,10 @@ pub enum PlanValidationError {
     ZeroLimit,
     /// A composite operator has no children.
     EmptyComposite,
+    /// A custom ranking profile has no usable name.
+    EmptyRankingProfile,
+    /// A direct plan violates a request-level structural invariant.
+    InvalidRequest(super::request::QueryValidationError),
 }
 
 impl core::fmt::Display for PlanValidationError {
@@ -304,6 +339,10 @@ impl core::fmt::Display for PlanValidationError {
             Self::InvalidFilter(error) => write!(formatter, "invalid plan filter: {error}"),
             Self::ZeroLimit => formatter.write_str("query plan limit must be greater than zero"),
             Self::EmptyComposite => formatter.write_str("query plan composite must not be empty"),
+            Self::EmptyRankingProfile => {
+                formatter.write_str("query plan ranking profile name must not be empty")
+            }
+            Self::InvalidRequest(error) => write!(formatter, "invalid query plan request: {error}"),
         }
     }
 }
@@ -312,8 +351,12 @@ impl std::error::Error for PlanValidationError {}
 
 fn validate_operator(operator: &QueryOperator) -> Result<(), PlanValidationError> {
     match operator {
-        QueryOperator::Lookup(_) | QueryOperator::Traverse(_) | QueryOperator::Retrieve(_) => {
-            Ok(())
+        QueryOperator::Lookup(_) => Ok(()),
+        QueryOperator::Traverse(plan) => {
+            plan.validate().map_err(PlanValidationError::InvalidRequest)
+        }
+        QueryOperator::Retrieve(plan) => {
+            plan.validate().map_err(PlanValidationError::InvalidRequest)
         }
         QueryOperator::Composite(children) => {
             if children.is_empty() {
@@ -338,7 +381,10 @@ fn validate_operator(operator: &QueryOperator) -> Result<(), PlanValidationError
 
 #[cfg(test)]
 mod tests {
-    use super::{IndexAccessRequirement, LookupPlan, QueryOperator, QueryPlan};
+    use super::{
+        IndexAccessRequirement, LookupPlan, PlanValidationError, QueryOperator, QueryPlan,
+        TraversalPlan,
+    };
     use crate::assertion::AssertionObject;
     use crate::identity::EntityId;
     use crate::query::{LookupRequest, QueryRequest, plan};
@@ -361,6 +407,132 @@ mod tests {
         let object = AssertionObject::Entity(EntityId::new("entity-plan-target").unwrap());
         let lookup = LookupPlan::new(crate::query::LookupTarget::Object(object.clone()));
         assert_eq!(lookup.target(), &crate::query::LookupTarget::Object(object));
+    }
+
+    #[test]
+    fn traversal_plan_propagates_edge_and_result_budgets_to_graph_bounds() {
+        let object = AssertionObject::Entity(EntityId::new("entity-plan-budget").unwrap());
+        let budget = crate::query::TraversalBudget::new(3)
+            .with_max_edges(7)
+            .with_max_results(5);
+        let plan = TraversalPlan::new(
+            object,
+            None,
+            crate::graph::TraversalDirection::Forward,
+            budget,
+        );
+
+        assert_eq!(plan.graph_bounds().max_depth(), 3);
+        assert_eq!(plan.graph_bounds().max_edges(), 7);
+        assert_eq!(plan.graph_bounds().max_results(), 5);
+    }
+
+    #[test]
+    fn query_plan_validate_rejects_blank_ranking_profile_before_operator_validation() {
+        let options = crate::query::QueryOptions::new()
+            .with_ranking(crate::query::RankingProfile::Custom("   ".to_owned()));
+        let plan = QueryPlan::new(
+            crate::query::QueryKind::Lookup,
+            QueryOperator::Composite(Vec::new()),
+            &options,
+            IndexAccessRequirement::Optional,
+        );
+
+        assert!(matches!(
+            plan.validate(),
+            Err(PlanValidationError::EmptyRankingProfile)
+        ));
+    }
+
+    #[test]
+    fn direct_plan_validation_reuses_pagination_checks() {
+        let object = AssertionObject::Entity(EntityId::new("entity-plan-pagination").unwrap());
+        let pagination = crate::query::Pagination::new(10)
+            .with_cursor("cursor")
+            .with_offset(1);
+        let options = crate::query::QueryOptions::new().with_pagination(pagination);
+        let plan = QueryPlan::new(
+            crate::query::QueryKind::Lookup,
+            QueryOperator::Lookup(LookupPlan::new(crate::query::LookupTarget::Object(object))),
+            &options,
+            IndexAccessRequirement::Optional,
+        );
+
+        assert!(matches!(
+            plan.validate(),
+            Err(PlanValidationError::InvalidRequest(
+                crate::query::QueryValidationError::CursorAndOffsetConflict
+            ))
+        ));
+    }
+
+    #[test]
+    fn direct_plan_validation_rejects_empty_retrieval_target() {
+        let options = crate::query::QueryOptions::new();
+        let plan = QueryPlan::new(
+            crate::query::QueryKind::Retrieval,
+            QueryOperator::Retrieve(crate::query::RetrievalPlan::new(
+                crate::query::RetrievalMode::Lexical,
+                crate::query::RetrievalTarget::Text("   ".to_owned()),
+                crate::query::SemanticExpansion::None,
+            )),
+            &options,
+            IndexAccessRequirement::Preferred,
+        );
+
+        assert!(matches!(
+            plan.validate(),
+            Err(PlanValidationError::InvalidRequest(
+                crate::query::QueryValidationError::EmptyTextTarget
+            ))
+        ));
+    }
+
+    #[test]
+    fn direct_plan_validation_rejects_mismatched_retrieval_target() {
+        let options = crate::query::QueryOptions::new();
+        let plan = QueryPlan::new(
+            crate::query::QueryKind::Retrieval,
+            QueryOperator::Retrieve(crate::query::RetrievalPlan::new(
+                crate::query::RetrievalMode::Conceptual,
+                crate::query::RetrievalTarget::Text("concept".to_owned()),
+                crate::query::SemanticExpansion::None,
+            )),
+            &options,
+            IndexAccessRequirement::Preferred,
+        );
+
+        assert!(matches!(
+            plan.validate(),
+            Err(PlanValidationError::InvalidRequest(
+                crate::query::QueryValidationError::TargetModeMismatch
+            ))
+        ));
+    }
+
+    #[test]
+    fn direct_plan_validation_rejects_zero_traversal_work_budget() {
+        let object = AssertionObject::Entity(EntityId::new("entity-plan-budget-zero").unwrap());
+        let budget = crate::query::TraversalBudget::new(2).with_max_edges(0);
+        let options = crate::query::QueryOptions::new();
+        let plan = QueryPlan::new(
+            crate::query::QueryKind::Traversal,
+            QueryOperator::Traverse(TraversalPlan::new(
+                object,
+                None,
+                crate::graph::TraversalDirection::Forward,
+                budget,
+            )),
+            &options,
+            IndexAccessRequirement::Optional,
+        );
+
+        assert!(matches!(
+            plan.validate(),
+            Err(PlanValidationError::InvalidRequest(
+                crate::query::QueryValidationError::ZeroBudget("max_edges")
+            ))
+        ));
     }
 
     #[test]

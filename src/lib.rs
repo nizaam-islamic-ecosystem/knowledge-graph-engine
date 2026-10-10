@@ -11,7 +11,7 @@
 //! associated with that module is implemented or part of the current contract.
 //!
 //! The public `use`/re-export surface below exposes the currently established
-//! Phase 0 through Phase 4 contracts without recreating Core or Indexing types.
+//! Phase 0 through Phase 5 contracts without recreating Core or Indexing types.
 //!
 //! Core remains authoritative for universal runtime, lifecycle, request
 //! admission, execution context, cancellation, deadlines, capability dispatch,
@@ -64,10 +64,10 @@ pub use identity::{
 };
 
 // -----------------------------------------------------------------------------
-// Phase 1 entity public surface
+// Phase 1 entity public surface, including Phase 5 source-owned external identity
 // -----------------------------------------------------------------------------
 
-pub use entity::{Alias, Entity, Mention, Name};
+pub use entity::{Alias, Entity, ExternalIdentifier, ExternalIdentifierError, Mention, Name};
 
 // -----------------------------------------------------------------------------
 // Phase 1 concept public surface
@@ -152,12 +152,12 @@ pub use semantics::{
 // -----------------------------------------------------------------------------
 
 pub use resolution::{
-    Candidate, CandidateSignal, CircularEvidenceGuard, EntityCandidateProfile, ExternalIdentifier,
-    ExternalIdentifierCrosswalk, ExternalIdentifierError, GraphEvidenceDependency,
-    NormalizationError, RankingPolicy, ResolutionDecision, ResolutionDependencyToken,
-    ResolutionError, ResolutionInput, ResolutionPolicy, ResolutionReference, ResolutionResult,
-    ResolutionState, Resolver, decide, exact_match, generate_candidates, normalize,
-    normalized_match, provisional, rank_candidates, rejected, transliteration_match,
+    Candidate, CandidateSignal, CircularEvidenceGuard, EntityCandidateProfile,
+    ExternalIdentifierCrosswalk, GraphEvidenceDependency, NormalizationError, RankingPolicy,
+    ResolutionDecision, ResolutionDependencyToken, ResolutionError, ResolutionInput,
+    ResolutionPolicy, ResolutionReference, ResolutionResult, ResolutionState, Resolver, decide,
+    exact_match, generate_candidates, normalize, normalized_match, provisional, rank_candidates,
+    rejected, transliteration_match,
 };
 
 // -----------------------------------------------------------------------------
@@ -211,3 +211,46 @@ pub use uncertainty::{
     CurrentViewPolicy, EPISTEMIC_STATES, EpistemicStatus, detect_contradiction,
     is_phase4_epistemic_status,
 };
+
+// -----------------------------------------------------------------------------
+// Phase 5 integration and ingestion public surface
+// -----------------------------------------------------------------------------
+
+// Indexing's assigned object identity is useful at the external KG boundary.
+// The internal IndexId remains owned by Indexing and is intentionally not
+// re-exported here.
+pub use nizaam_indexing::IndexAssignedId;
+
+// These are KG-owned adapters and contracts over Core and Indexing. Their
+// implementation remains delegated to the respective engines; no duplicate
+// runtime, artifact store, transport protocol, or index identity is introduced.
+pub use integration::indexing::{
+    CoreIndexingRequest, CoreIndexingResponse, IndexingIntegrationError,
+    IndexingPublicationReadiness, IndexingReadinessBlocker, IndexingReadinessReceipt,
+    IndexingSynchronizationRecord, IndexingSynchronizationStatus, TypedIndexingEvent,
+    TypedIndexingEventResponse,
+};
+
+pub use ingestion::{
+    ApprovalDecision, ApprovalError, ApprovalOutcome, ApprovalPolicy, CandidateKey,
+    CandidateProgress, CandidateState, CandidateTransition, CanonicalKnowledgeSubgraph,
+    CanonicalSemanticIdentity, CorrectionRecord, CurationOutcome, CurationRequirement,
+    DeduplicationResult, GenericTextNormalizer, GovernanceActor, GovernanceRecord, GovernanceState,
+    GovernanceTransition, IngestionPipeline, IngestionRun, IngestionRunState, MappedCandidate,
+    MappingError, MappingMetadata, NormalizationMetadata, NormalizationStage, NormalizedRecord,
+    PipelineError, PipelinePlan, PipelineStage, PipelineStageHook, PipelineStageVersion,
+    PipelineStepVersion, PublicationCoordinator, PublicationDecision, PublicationError,
+    PublicationOutcome, PublicationRecord, PublicationRequest, RawMaterial, RawMaterialError,
+    ReprocessingMode, ReprocessingRequest, RunCompletion, SemanticDeduplicationKey,
+    SemanticDeduplicator, SemanticMapper, SourceAdapter, SourceAdapterError, SourceApprovalRule,
+    SourceAuthenticity, SourceClass, SourceDeduplicationKey, SourceDeduplicator, SourceDelta,
+    SourceMetadataError, SourceRecord, SourceRecordError, SourceRecordMetadata,
+    SourceRecordMetadataError, StageExecution, StageExecutionInput, StageExecutionOutcome,
+    StructuredJsonAdapter, SubgraphValidationError, TextNormalizationMode, ValidationError,
+    ValidationFinding, ValidationPolicy, ValidationResult, ValidationSeverity, ValidationStage,
+    ValidationStatus, WithdrawalRecord, validate_candidate_structure,
+};
+
+// Phase 3 already exports `NormalizationError` at the crate root. Keep that
+// name stable and expose Phase 5's separate normalization error explicitly.
+pub use ingestion::NormalizationError as IngestionNormalizationError;

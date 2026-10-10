@@ -4,8 +4,13 @@
 //! candidate generation, ranking, disambiguation, minimal reversible
 //! decisions, external identifier crosswalks, and structural circular-evidence
 //! protection. Persistence, entity merging, full provenance/evidence,
-//! IndexAssignedId generation, and ML-assisted canonicalization remain outside
+//! `IndexAssignedId` generation, and ML-assisted canonicalization remain outside
 //! this module.
+//!
+//! `ExternalIdentifier` is canonically defined by the entity layer and
+//! re-exported here so existing `resolution::ExternalIdentifier` callers remain
+//! source-compatible. Crosswalks remain resolution-owned mappings from an
+//! external identifier to a canonical entity identity.
 
 mod candidate;
 mod crosswalk;
@@ -13,11 +18,12 @@ mod disambiguation;
 mod matching;
 mod resolver;
 
+pub use crate::entity::{ExternalIdentifier, ExternalIdentifierError};
 pub use candidate::{
     Candidate, CandidateSignal, EntityCandidateProfile, ResolutionInput, ResolutionReference,
     generate_candidates,
 };
-pub use crosswalk::{ExternalIdentifier, ExternalIdentifierCrosswalk, ExternalIdentifierError};
+pub use crosswalk::ExternalIdentifierCrosswalk;
 pub use disambiguation::{
     RankingPolicy, ResolutionDecision, ResolutionPolicy, ResolutionState, decide, provisional,
     rank_candidates, rejected,
@@ -34,6 +40,7 @@ pub use resolver::{
 mod tests {
     use super::*;
     use crate::identity::{EntityId, MentionId};
+    use std::any::TypeId;
 
     #[test]
     fn public_resolution_boundary_supports_the_complete_phase3_flow() {
@@ -67,6 +74,18 @@ mod tests {
             decision.entity_id().expect("candidate reference")
         );
         assert_eq!(decision.state(), ResolutionState::Provisional);
+    }
+
+    #[test]
+    fn resolution_external_identifier_is_the_entity_canonical_type() {
+        assert_eq!(
+            TypeId::of::<ExternalIdentifier>(),
+            TypeId::of::<crate::entity::ExternalIdentifier>()
+        );
+        assert_eq!(
+            TypeId::of::<ExternalIdentifierError>(),
+            TypeId::of::<crate::entity::ExternalIdentifierError>()
+        );
     }
 
     #[test]

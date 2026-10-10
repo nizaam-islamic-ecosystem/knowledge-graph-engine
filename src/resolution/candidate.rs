@@ -8,8 +8,8 @@ use std::fmt;
 
 use crate::identity::{EntityId, MentionId, ReferenceId, SourceId};
 
-use super::crosswalk::ExternalIdentifier;
 use super::matching::{exact_match, normalize};
+use crate::entity::ExternalIdentifier;
 
 /// The source-level object being resolved.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -612,11 +612,11 @@ fn normalized_non_empty(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::crosswalk::ExternalIdentifier;
     use super::{
         CandidateSignal, EntityCandidateProfile, ResolutionInput, ResolutionReference,
         generate_candidates,
     };
+    use crate::entity::ExternalIdentifier;
     use crate::identity::{EntityId, MentionId, SourceId};
 
     fn entity(value: &str) -> EntityId {

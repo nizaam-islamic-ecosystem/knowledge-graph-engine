@@ -13,11 +13,10 @@
 //! - universal request/response contracts
 //!
 //! KG-specific modules consume these adapters instead of recreating any of
-//! those Core mechanisms.
-//! Phase 0 scaffolding intentionally retains the complete Core integration surface
-//! before the final crate-level public wiring is added.
-//! The implementation is kept intact; this local allowance prevents intermediate
-//! dead-code diagnostics from masking real errors.
+//! those Core mechanisms. Phase-specific integration adapters, such as the
+//! Indexing boundary, remain separate modules and reuse these Core contracts.
+//! The dead-code allowance is retained while later-phase consumers are wired
+//! incrementally; it does not represent a second lifecycle or runtime.
 #![allow(dead_code)]
 
 use std::sync::Arc;

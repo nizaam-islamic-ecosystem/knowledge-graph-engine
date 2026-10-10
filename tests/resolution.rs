@@ -1,11 +1,13 @@
 //! Level 3 Phase 3 public-boundary tests for deterministic entity resolution.
 
+use nizaam_knowledge_graph::entity::ExternalIdentifier as EntityExternalIdentifier;
 use nizaam_knowledge_graph::identity::{EntityId, MentionId, SourceId};
 use nizaam_knowledge_graph::resolution::{
     CandidateSignal, EntityCandidateProfile, ExternalIdentifier, ExternalIdentifierCrosswalk,
     ResolutionInput, ResolutionPolicy, ResolutionReference, ResolutionState, Resolver, decide,
     normalize, normalized_match, rank_candidates, transliteration_match,
 };
+use std::any::TypeId;
 
 fn candidate(
     id: &str,
@@ -198,4 +200,23 @@ fn circular_graph_evidence_is_not_treated_as_independent() {
         resolver.validate_graph_evidence(&guard, &dependency),
         Err(ResolutionError::CircularEvidence { .. })
     ));
+}
+
+#[test]
+fn resolution_external_identifier_path_remains_a_compatibility_reexport() {
+    assert_eq!(
+        TypeId::of::<ExternalIdentifier>(),
+        TypeId::of::<EntityExternalIdentifier>()
+    );
+
+    let external = EntityExternalIdentifier::new(
+        SourceId::new("source-canonical-type").unwrap(),
+        "external-29",
+    )
+    .unwrap();
+    let entity = EntityId::new("entity-crosswalk-29").unwrap();
+    let crosswalk = ExternalIdentifierCrosswalk::new(external.clone(), entity.clone());
+
+    assert_eq!(crosswalk.external_identifier(), &external);
+    assert_eq!(crosswalk.canonical_entity(), &entity);
 }

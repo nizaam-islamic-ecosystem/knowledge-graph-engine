@@ -616,3 +616,29 @@ fn phase2_graph_edge_is_structural_and_references_the_canonical_assertion() {
     assert_eq!(edge.assertion_id(), assertion.id());
     assert_ne!(edge.id().as_str(), assertion.id().as_str());
 }
+
+#[test]
+fn phase5_ingestion_and_indexing_contracts_are_public_without_duplicate_identity_types() {
+    use std::any::TypeId;
+
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::IngestionPipeline>(),
+        TypeId::of::<nizaam_knowledge_graph::ingestion::IngestionPipeline>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::ExternalIdentifier>(),
+        TypeId::of::<nizaam_knowledge_graph::entity::ExternalIdentifier>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::ExternalIdentifier>(),
+        TypeId::of::<nizaam_knowledge_graph::resolution::ExternalIdentifier>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::IndexingReadinessReceipt>(),
+        TypeId::of::<nizaam_knowledge_graph::integration::indexing::IndexingReadinessReceipt>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::IndexAssignedId>(),
+        TypeId::of::<nizaam_indexing::IndexAssignedId>(),
+    );
+}

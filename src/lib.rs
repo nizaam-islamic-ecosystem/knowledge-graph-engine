@@ -115,12 +115,13 @@ pub use relationship::{
 };
 
 // -----------------------------------------------------------------------------
-// Phase 2 graph public surface
+// Phase 2 graph and Phase 6 traversal/path public surface
 // -----------------------------------------------------------------------------
 
 pub use graph::{
-    Graph, GraphEdge, GraphEdgeError, GraphEdgeId, GraphError, GraphNode, GraphNodeId,
-    TraversalDirection, TraversalError, TraversalStep, traverse,
+    Graph, GraphEdge, GraphEdgeError, GraphEdgeId, GraphError, GraphNode, GraphNodeId, PathError,
+    TraversalBounds, TraversalDirection, TraversalError, TraversalPath, TraversalStep, traverse,
+    traverse_bounded,
 };
 
 // -----------------------------------------------------------------------------
@@ -254,3 +255,30 @@ pub use ingestion::{
 // Phase 3 already exports `NormalizationError` at the crate root. Keep that
 // name stable and expose Phase 5's separate normalization error explicitly.
 pub use ingestion::NormalizationError as IngestionNormalizationError;
+
+// -----------------------------------------------------------------------------
+// Phase 6 query, traversal, search, and retrieval public surface
+// -----------------------------------------------------------------------------
+
+// The query module owns the logical query contract, planning, execution,
+// filtering, ranking, pagination, and explainable result model. The index module
+// exposes only KG-side access abstractions over Indexing. Neither module
+// re-exports Indexing's internal identities or physical implementation details.
+pub use index::{
+    ForwardIndexAccess, IndexQueryability, IndexSearchAccess, IndexStateError,
+    IndexStateObservation, IndexVersionObservation, ReverseIndexAccess, lookup_forward,
+    lookup_reverse, search,
+};
+
+pub use query::{
+    DeterministicRankingProvider, EntityConstraint, EntityPosition, Filter, FilterError,
+    IndexAccessRequirement, InferenceStatus, LookupPlan, LookupRequest, LookupTarget,
+    MatchExplanation, Pagination, PaginationMetadata, PlanValidationError, QueryAccess,
+    QueryExecutionError, QueryExplanation, QueryKind, QueryMatchCandidate, QueryMatchType,
+    QueryOperator, QueryOptions, QueryOrdering, QueryPlan, QueryPlannerError, QueryReference,
+    QueryRequest, QueryResult, QueryResultItem, QueryValidationError, RankedCandidate,
+    RankingMetadata, RankingProfile, RankingProvider, RankingSignal, ReasoningProfile,
+    ResultExplanationError, RetrievalMode, RetrievalPlan, RetrievalRequest, RetrievalTarget,
+    SemanticExpansion, TemporalFilter, TraversalBudget, TraversalPlan, TraversalRequest,
+    VisibilityProfile, execute, execute_with_ranking, plan, rank_query_candidates,
+};

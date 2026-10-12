@@ -683,3 +683,88 @@ fn phase6_query_graph_and_index_contracts_are_public_at_the_crate_boundary() {
     let planned = nizaam_knowledge_graph::plan(&request).expect("public planner should be usable");
     assert_eq!(planned.kind(), nizaam_knowledge_graph::QueryKind::Lookup);
 }
+
+// -----------------------------------------------------------------------------
+// Phase 7 durable storage, versioning, and derived-index public boundary
+// -----------------------------------------------------------------------------
+
+#[test]
+fn phase7_storage_versioning_and_index_contracts_are_public_at_the_crate_boundary() {
+    use std::any::TypeId;
+
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::Document>(),
+        TypeId::of::<nizaam_knowledge_graph::storage::Document>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::DocumentId>(),
+        TypeId::of::<nizaam_knowledge_graph::storage::DocumentId>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::RepositoryRecord>(),
+        TypeId::of::<nizaam_knowledge_graph::storage::RepositoryRecord>(),
+    );
+    assert_eq!(
+        TypeId::of::<
+            nizaam_knowledge_graph::ChangeSetTransaction<
+                'static,
+                nizaam_knowledge_graph::storage::FileRepository,
+            >,
+        >(),
+        TypeId::of::<
+            nizaam_knowledge_graph::storage::ChangeSetTransaction<
+                'static,
+                nizaam_knowledge_graph::storage::FileRepository,
+            >,
+        >(),
+    );
+
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::KgVersion>(),
+        TypeId::of::<nizaam_knowledge_graph::versioning::KgVersion>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::ChangeSet>(),
+        TypeId::of::<nizaam_knowledge_graph::versioning::ChangeSet>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::StorageSchemaVersion>(),
+        TypeId::of::<nizaam_knowledge_graph::versioning::StorageSchemaVersion>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::MigrationPlan<'static>>(),
+        TypeId::of::<nizaam_knowledge_graph::versioning::MigrationPlan<'static>>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::CompatibilityMatrix>(),
+        TypeId::of::<nizaam_knowledge_graph::versioning::CompatibilityMatrix>(),
+    );
+
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::IndexSynchronizationChange>(),
+        TypeId::of::<nizaam_knowledge_graph::index::IndexSynchronizationChange>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::KgIndexSynchronizer>(),
+        TypeId::of::<nizaam_knowledge_graph::index::KgIndexSynchronizer>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::KgIndexState>(),
+        TypeId::of::<nizaam_knowledge_graph::index::KgIndexState>(),
+    );
+    assert_eq!(
+        TypeId::of::<nizaam_knowledge_graph::KgIndexVersion>(),
+        TypeId::of::<nizaam_knowledge_graph::index::KgIndexVersion>(),
+    );
+
+    // The Phase 7 public boundary exposes semantic contracts and synchronization
+    // metadata while the concrete file-backed provider remains under `storage`.
+    let _repository_trait: Option<&dyn nizaam_knowledge_graph::Repository> = None;
+    let _store_trait: Option<&dyn nizaam_knowledge_graph::DocumentStore> = None;
+    let _index_sync_trait: Option<
+        &dyn nizaam_knowledge_graph::RepositoryIndexSynchronizer<
+            nizaam_knowledge_graph::IndexSynchronizationChange,
+            Report = nizaam_knowledge_graph::IndexSynchronizationReport,
+        >,
+    > = None;
+}

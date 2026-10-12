@@ -10,8 +10,8 @@
 //! future-phase modules. Declaring a module does not mean that all behavior
 //! associated with that module is implemented or part of the current contract.
 //!
-//! The public `use`/re-export surface below exposes the currently established
-//! Phase 0 through Phase 5 contracts without recreating Core or Indexing types.
+//! The public `use`/re-export surface below exposes the established
+//! Phase 0 through Phase 7 contracts without recreating Core or Indexing types.
 //!
 //! Core remains authoritative for universal runtime, lifecycle, request
 //! admission, execution context, cancellation, deadlines, capability dispatch,
@@ -262,12 +262,15 @@ pub use ingestion::NormalizationError as IngestionNormalizationError;
 
 // The query module owns the logical query contract, planning, execution,
 // filtering, ranking, pagination, and explainable result model. The index module
-// exposes only KG-side access abstractions over Indexing. Neither module
-// re-exports Indexing's internal identities or physical implementation details.
+// exposes KG-owned access abstractions and synchronization contracts over the
+// physical derived indexes. Indexing's internal identities and implementation
+// details remain outside the crate-root semantic API.
 pub use index::{
-    ForwardIndexAccess, IndexQueryability, IndexSearchAccess, IndexStateError,
-    IndexStateObservation, IndexVersionObservation, ReverseIndexAccess, lookup_forward,
-    lookup_reverse, search,
+    ForwardIndexAccess, IndexChangeAction, IndexQueryability, IndexSearchAccess, IndexStateError,
+    IndexStateObservation, IndexSynchronizationChange, IndexSynchronizationError,
+    IndexSynchronizationPolicy, IndexSynchronizationReport, IndexSynchronizationResult,
+    IndexVersionObservation, KgIndexKind, KgIndexState, KgIndexSynchronizer, KgIndexVersion,
+    KgSearchHit, KgSearchIndexAccess, ReverseIndexAccess, lookup_forward, lookup_reverse, search,
 };
 
 pub use query::{
@@ -281,4 +284,33 @@ pub use query::{
     ResultExplanationError, RetrievalMode, RetrievalPlan, RetrievalRequest, RetrievalTarget,
     SemanticExpansion, TemporalFilter, TraversalBudget, TraversalPlan, TraversalRequest,
     VisibilityProfile, execute, execute_with_ranking, plan, rank_query_candidates,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 7 storage public surface
+// -----------------------------------------------------------------------------
+
+// The crate root exposes provider-neutral storage, repository, transaction,
+// snapshot, and recovery contracts. The initial file-backed provider remains
+// available through `storage::...` but is intentionally not re-exported here,
+// keeping provider-specific physical details out of the semantic root API.
+pub use storage::{
+    ChangeSetTransaction, CommittedChangeSet, Document, DocumentId, DocumentStore,
+    DocumentStoreError, RecoveredState, RecoveryCommit, RecoveryError, RecoveryJournal, Repository,
+    RepositoryError, RepositoryIndexSynchronization, RepositoryIndexSynchronizer, RepositoryRecord,
+    Snapshot, SnapshotError, TransactionError, TransactionState,
+};
+
+// -----------------------------------------------------------------------------
+// Phase 7 versioning public surface
+// -----------------------------------------------------------------------------
+
+// KG versions describe semantic canonical-knowledge state. Storage schema
+// versions, migration state, and compatibility results remain distinct from
+// that semantic version identity.
+pub use versioning::{
+    Change, ChangeKind, ChangeSet, ChangeSetId, ChangeTarget, CompatibilityKind,
+    CompatibilityLevel, CompatibilityMatrix, CompatibilityReport, CompatibilityResult, KgVersion,
+    KgVersionId, MigrationError, MigrationPlan, MigrationReport, MigrationRunner, MigrationState,
+    MigrationStep, StorageSchemaVersion,
 };

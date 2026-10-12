@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+dirs = "7.0.0"
 nizaam-core = "1.0.1"
 nizaam-indexing = "1.0.0"
 serde = "1.0.229"

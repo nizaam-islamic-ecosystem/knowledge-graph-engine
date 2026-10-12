@@ -17,9 +17,7 @@ pub enum IndexQueryability {
     Stale,
     Rebuilding,
 }
-
 impl IndexQueryability {
-    /// Returns whether the observed state can currently be queried.
     #[must_use]
     pub const fn is_queryable(self) -> bool {
         matches!(self, Self::Queryable | Self::Stale)
@@ -33,7 +31,6 @@ pub struct IndexVersionObservation {
     source_version: Option<String>,
     schema_version: Option<String>,
 }
-
 impl IndexVersionObservation {
     pub fn new(version: impl Into<String>) -> Result<Self, IndexStateError> {
         let version = version.into();
@@ -46,19 +43,16 @@ impl IndexVersionObservation {
             schema_version: None,
         })
     }
-
     #[must_use]
-    pub fn with_source_version(mut self, source_version: impl Into<String>) -> Self {
-        self.source_version = Some(source_version.into());
+    pub fn with_source_version(mut self, value: impl Into<String>) -> Self {
+        self.source_version = Some(value.into());
         self
     }
-
     #[must_use]
-    pub fn with_schema_version(mut self, schema_version: impl Into<String>) -> Self {
-        self.schema_version = Some(schema_version.into());
+    pub fn with_schema_version(mut self, value: impl Into<String>) -> Self {
+        self.schema_version = Some(value.into());
         self
     }
-
     #[must_use]
     pub fn version(&self) -> &str {
         &self.version
@@ -83,7 +77,6 @@ pub struct IndexStateObservation {
     source_update_sequence: Option<u64>,
     indexed_update_sequence: Option<u64>,
 }
-
 impl IndexStateObservation {
     #[must_use]
     pub fn new(
@@ -150,18 +143,14 @@ pub enum KgIndexKind {
     Reverse,
     Search,
 }
-
 /// Synchronization guarantee declared for one KG-owned derived index.
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
 )]
 pub enum IndexSynchronizationPolicy {
-    /// Forward/reverse indexes are critical derived access paths.
     Strong,
-    /// Search may lag canonical state and must expose explicit staleness.
     Eventual,
 }
-
 impl IndexSynchronizationPolicy {
     #[must_use]
     pub const fn for_kind(kind: KgIndexKind) -> Self {
@@ -171,14 +160,12 @@ impl IndexSynchronizationPolicy {
         }
     }
 }
-
 /// Independent version metadata for one KG-owned derived index.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct KgIndexVersion {
     generation: u64,
     built_from_kg_version: String,
 }
-
 impl KgIndexVersion {
     pub fn new(
         generation: u64,
@@ -202,7 +189,6 @@ impl KgIndexVersion {
         &self.built_from_kg_version
     }
 }
-
 /// State metadata for a derived KG index.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct KgIndexState {
@@ -211,7 +197,6 @@ pub struct KgIndexState {
     policy: IndexSynchronizationPolicy,
     version: KgIndexVersion,
 }
-
 impl KgIndexState {
     pub fn new(kind: KgIndexKind, version: KgIndexVersion) -> Self {
         Self {
@@ -221,8 +206,6 @@ impl KgIndexState {
             version,
         }
     }
-
-    /// Creates an explicitly stale state before the first successful sync.
     #[must_use]
     pub fn uninitialized(kind: KgIndexKind) -> Self {
         Self::new(
@@ -232,8 +215,6 @@ impl KgIndexState {
         )
         .mark_stale()
     }
-
-    /// Overrides the synchronization policy while preserving index state.
     #[must_use]
     pub const fn with_policy(mut self, policy: IndexSynchronizationPolicy) -> Self {
         self.policy = policy;
@@ -255,8 +236,6 @@ impl KgIndexState {
     pub const fn policy(&self) -> IndexSynchronizationPolicy {
         self.policy
     }
-
-    /// Marks this index synchronized against a newly committed KG version.
     pub fn synchronized_to(&self, kg_version: impl Into<String>) -> Result<Self, IndexStateError> {
         Ok(Self {
             kind: self.kind,
@@ -265,8 +244,6 @@ impl KgIndexState {
             version: KgIndexVersion::new(self.version.generation().saturating_add(1), kg_version)?,
         })
     }
-
-    /// Marks a failed synchronization according to the declared policy.
     #[must_use]
     pub fn mark_synchronization_failed(mut self) -> Self {
         self.queryability = match self.policy {
@@ -296,23 +273,17 @@ impl KgIndexState {
         self
     }
 }
-
 /// Errors for index state metadata.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum IndexStateError {
     EmptyVersion,
     EmptyKgVersion,
 }
-
 impl core::fmt::Display for IndexStateError {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::EmptyVersion => {
-                formatter.write_str("Indexing version observation must not be empty")
-            }
-            Self::EmptyKgVersion => {
-                formatter.write_str("KG index built-from version must not be empty")
-            }
+            Self::EmptyVersion => f.write_str("Indexing version observation must not be empty"),
+            Self::EmptyKgVersion => f.write_str("KG index built-from version must not be empty"),
         }
     }
 }
@@ -322,7 +293,6 @@ impl std::error::Error for IndexStateError {}
 mod tests {
     use super::*;
     use nizaam_indexing::index::definition::TargetReferenceType;
-
     #[test]
     fn kg_index_version_is_distinct_from_kg_version() {
         let version = KgIndexVersion::new(3, "kg-v42").unwrap();
@@ -332,7 +302,6 @@ mod tests {
         assert_eq!(state.version().generation(), 3);
         assert_eq!(state.version().built_from_kg_version(), "kg-v42");
     }
-
     #[test]
     fn phase6_indexing_observation_remains_opaque() {
         let reference = ObjectReference::new("kg", "entity-1").unwrap();
@@ -352,22 +321,24 @@ mod tests {
         let state = KgIndexState::uninitialized(KgIndexKind::Forward);
         assert_eq!(state.policy(), IndexSynchronizationPolicy::Strong);
         assert_eq!(state.queryability(), IndexQueryability::Stale);
-
-        let synchronized = state
-            .synchronized_to("kg-v1")
-            .expect("synchronization should produce a valid version");
+        let synchronized = state.synchronized_to("kg-v1").expect("sync version");
         assert_eq!(synchronized.queryability(), IndexQueryability::Queryable);
         assert_eq!(synchronized.version().generation(), 1);
         assert_eq!(synchronized.version().built_from_kg_version(), "kg-v1");
     }
-
     #[test]
     fn failed_synchronization_respects_strong_and_eventual_policies() {
-        let forward =
-            KgIndexState::uninitialized(KgIndexKind::Forward).mark_synchronization_failed();
-        assert_eq!(forward.queryability(), IndexQueryability::Unavailable);
-
-        let search = KgIndexState::uninitialized(KgIndexKind::Search).mark_synchronization_failed();
-        assert_eq!(search.queryability(), IndexQueryability::Stale);
+        assert_eq!(
+            KgIndexState::uninitialized(KgIndexKind::Forward)
+                .mark_synchronization_failed()
+                .queryability(),
+            IndexQueryability::Unavailable
+        );
+        assert_eq!(
+            KgIndexState::uninitialized(KgIndexKind::Search)
+                .mark_synchronization_failed()
+                .queryability(),
+            IndexQueryability::Stale
+        );
     }
 }

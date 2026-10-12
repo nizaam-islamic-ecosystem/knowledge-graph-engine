@@ -223,10 +223,15 @@ impl MigrationRunner {
         }
 
         let mut applied_steps = Vec::with_capacity(plan.steps().len());
+        // Apply and verify the entire path before activating any destination.
+        // A failed verification must never leave an earlier step activated.
         for step in plan.steps() {
             step.apply()?;
             applied_steps.push(step.name().to_owned());
             step.verify()?;
+        }
+
+        for step in plan.steps() {
             step.activate()?;
         }
 
@@ -251,6 +256,7 @@ mod tests {
         applied: Cell<bool>,
         verified: Cell<bool>,
         fail_apply: bool,
+        fail_verify: bool,
         activated: Cell<bool>,
     }
 
@@ -263,6 +269,7 @@ mod tests {
                 applied: Cell::new(false),
                 verified: Cell::new(false),
                 fail_apply: false,
+                fail_verify: false,
                 activated: Cell::new(false),
             }
         }
@@ -289,6 +296,9 @@ mod tests {
 
         fn verify(&self) -> Result<(), MigrationError> {
             assert!(self.applied.get());
+            if self.fail_verify {
+                return Err(MigrationError::VerificationFailed(self.name.to_owned()));
+            }
             self.verified.set(true);
             Ok(())
         }
@@ -334,6 +344,30 @@ mod tests {
         assert!(first.verified.get());
         assert!(first.activated.get());
         assert_eq!(report.applied_steps(), &["one-to-two".to_owned()]);
+    }
+
+    #[test]
+    fn later_verification_failure_prevents_every_activation() {
+        let first = Step::new(1, 2, "one-to-two");
+        let mut second = Step::new(2, 3, "two-to-three");
+        second.fail_verify = true;
+        let plan = MigrationPlan::new(
+            StorageSchemaVersion::new(1),
+            StorageSchemaVersion::new(3),
+            vec![&first, &second],
+        )
+        .expect("migration path should be valid");
+
+        assert!(matches!(
+            MigrationRunner::run(&plan),
+            Err(MigrationError::VerificationFailed(_))
+        ));
+        assert!(first.verified.get());
+        assert!(
+            !first.activated.get(),
+            "first step must not activate before full verification"
+        );
+        assert!(!second.activated.get());
     }
 
     #[test]

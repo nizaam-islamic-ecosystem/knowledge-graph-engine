@@ -205,36 +205,60 @@ impl FileDocumentStore {
         &self.root
     }
 
-    /// Acquires a provider-local exclusive process lock.
+    /// Acquires a provider-local exclusive advisory lock.
+    ///
+    /// The lock file is persistent by design. The operating system releases the
+    /// advisory lock if this process exits unexpectedly, so an abandoned lock
+    /// file cannot permanently block later writers.
     pub(crate) fn acquire_exclusive_lock(&self) -> Result<FileStoreLock, DocumentStoreError> {
         let lock_path = self.root.join(".lock");
         let file = OpenOptions::new()
+            .read(true)
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(false)
             .open(&lock_path)
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::AlreadyExists {
-                    DocumentStoreError::Conflict(
-                        DocumentId::new(".lock").expect("static lock document id is valid"),
-                    )
-                } else {
-                    map_io_error(&lock_path, error)
-                }
-            })?;
+            .map_err(|error| map_io_error(&lock_path, error))?;
 
-        Ok(FileStoreLock {
-            file,
-            path: lock_path,
-        })
+        file.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => DocumentStoreError::Conflict(
+                DocumentId::new(".lock").expect("static lock document id is valid"),
+            ),
+            std::fs::TryLockError::Error(error) => map_io_error(&lock_path, error),
+        })?;
+
+        Ok(FileStoreLock { _file: file })
     }
 
     fn path_for(&self, id: &DocumentId) -> PathBuf {
         self.root.join(id.as_str())
     }
 
-    fn write_atomically(&self, path: &Path, bytes: &[u8]) -> Result<(), DocumentStoreError> {
-        if let Some(parent) = path.parent() {
+    fn write_atomically(
+        &self,
+        id: &DocumentId,
+        path: &Path,
+        bytes: &[u8],
+        create_only: bool,
+    ) -> Result<(), DocumentStoreError> {
+        // Repository/index callers hold the provider lock across their full
+        // read-modify-write transaction. This primitive remains lock-free to
+        // avoid recursive locking; create publication itself is race-safe.
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            // Remember every missing directory so each parent directory is
+            // synced after its child entry is created.
+            let mut missing = Vec::new();
+            let mut ancestor = parent;
+            while !ancestor.exists() {
+                missing.push(ancestor.to_path_buf());
+                ancestor = ancestor.parent().unwrap_or_else(|| Path::new("."));
+            }
             fs::create_dir_all(parent).map_err(|error| map_io_error(parent, error))?;
+            for directory in missing.iter().rev() {
+                sync_containing_directory(directory)?;
+            }
         }
 
         let file_name = path
@@ -252,13 +276,38 @@ impl FileDocumentStore {
         let temporary_path = path.with_file_name(temporary_name);
 
         let write_result = (|| {
-            let mut file = File::create(&temporary_path)
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary_path)
                 .map_err(|error| map_io_error(&temporary_path, error))?;
             file.write_all(bytes)
                 .map_err(|error| map_io_error(&temporary_path, error))?;
             file.sync_all()
                 .map_err(|error| map_io_error(&temporary_path, error))?;
-            fs::rename(&temporary_path, path).map_err(|error| map_io_error(path, error))
+            drop(file);
+
+            if create_only {
+                // A hard link publishes the fully written temporary file without
+                // replacing an existing destination, even under concurrent create.
+                fs::hard_link(&temporary_path, path).map_err(|error| {
+                    if error.kind() == io::ErrorKind::AlreadyExists {
+                        DocumentStoreError::AlreadyExists(id.clone())
+                    } else {
+                        map_io_error(path, error)
+                    }
+                })?;
+                // Sync the directory while the new directory entry is durable,
+                // then remove the temporary hard link and sync that removal.
+                sync_containing_directory(path)?;
+                fs::remove_file(&temporary_path)
+                    .map_err(|error| map_io_error(&temporary_path, error))?;
+                sync_containing_directory(&temporary_path)?;
+            } else {
+                fs::rename(&temporary_path, path).map_err(|error| map_io_error(path, error))?;
+                sync_containing_directory(path)?;
+            }
+            Ok(())
         })();
 
         if write_result.is_err() {
@@ -281,20 +330,24 @@ impl DocumentStore for FileDocumentStore {
 
     fn create(&self, id: DocumentId, document: Document) -> Result<(), DocumentStoreError> {
         let path = self.path_for(&id);
-        if path.exists() {
-            return Err(DocumentStoreError::AlreadyExists(id));
-        }
-
-        self.write_atomically(&path, document.as_bytes())
+        self.write_atomically(&id, &path, document.as_bytes(), true)
     }
 
     fn replace(&self, id: &DocumentId, document: Document) -> Result<(), DocumentStoreError> {
         let path = self.path_for(id);
-        if !path.exists() {
-            return Err(DocumentStoreError::NotFound(id.clone()));
+        match fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                self.write_atomically(id, &path, document.as_bytes(), false)
+            }
+            Ok(_) => Err(DocumentStoreError::OperationFailed(format!(
+                "document path '{}' is not a regular file",
+                path.display()
+            ))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                Err(DocumentStoreError::NotFound(id.clone()))
+            }
+            Err(error) => Err(map_io_error(&path, error)),
         }
-
-        self.write_atomically(&path, document.as_bytes())
     }
 
     fn contains(&self, id: &DocumentId) -> Result<bool, DocumentStoreError> {
@@ -309,7 +362,7 @@ impl DocumentStore for FileDocumentStore {
     fn delete(&self, id: &DocumentId) -> Result<(), DocumentStoreError> {
         let path = self.path_for(id);
         match fs::remove_file(&path) {
-            Ok(()) => Ok(()),
+            Ok(()) => sync_containing_directory(&path),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 Err(DocumentStoreError::NotFound(id.clone()))
             }
@@ -318,18 +371,33 @@ impl DocumentStore for FileDocumentStore {
     }
 }
 
-/// Guard for a provider-local exclusive lock.
+/// Guard for a provider-local OS advisory lock. Dropping the file handle
+/// releases the lock; the persistent `.lock` path is intentionally retained.
 #[derive(Debug)]
 pub(crate) struct FileStoreLock {
-    file: File,
-    path: PathBuf,
+    // Holding the handle keeps the OS advisory lock alive. It is intentionally
+    // not read; dropping the handle releases the lock but leaves the lock file.
+    _file: File,
 }
 
 impl Drop for FileStoreLock {
     fn drop(&mut self) {
-        let _ = self.file.sync_all();
-        let _ = fs::remove_file(&self.path);
+        // Intentionally do not unlink `.lock`: other processes may already have
+        // opened it. The OS releases the advisory lock when `_file` is dropped.
     }
+}
+
+#[cfg(unix)]
+fn sync_containing_directory(path: &Path) -> Result<(), DocumentStoreError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| map_io_error(parent, error))
+}
+
+#[cfg(not(unix))]
+fn sync_containing_directory(_path: &Path) -> Result<(), DocumentStoreError> {
+    Ok(())
 }
 
 fn map_io_error(path: &Path, error: io::Error) -> DocumentStoreError {
@@ -367,6 +435,59 @@ mod tests {
             FileDocumentStore::default_root().expect("home should resolve"),
             home.join(".nizaam")
         );
+    }
+
+    #[test]
+    fn advisory_lock_is_released_without_deleting_lock_file() {
+        let root = temp_root();
+        let first_store = FileDocumentStore::new(&root).expect("store should open");
+        let second_store = FileDocumentStore::new(&root).expect("second store should open");
+        let lock = first_store
+            .acquire_exclusive_lock()
+            .expect("first lock should acquire");
+        assert!(matches!(
+            second_store.acquire_exclusive_lock(),
+            Err(DocumentStoreError::Conflict(_))
+        ));
+        drop(lock);
+        let next_lock = second_store
+            .acquire_exclusive_lock()
+            .expect("OS should release lock");
+        assert!(
+            root.join(".lock").exists(),
+            "lock file must remain persistent"
+        );
+        drop(next_lock);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_create_never_overwrites_the_first_document() {
+        let root = temp_root();
+        let first_store = FileDocumentStore::new(&root).expect("store should open");
+        let second_store = FileDocumentStore::new(&root).expect("second store should open");
+        let id = DocumentId::new("document.json").expect("valid id");
+        let first_id = id.clone();
+        let first = std::thread::spawn(move || {
+            first_store.create(first_id, Document::from_slice(b"first"))
+        });
+        let second_id = id.clone();
+        let second = std::thread::spawn(move || {
+            second_store.create(second_id, Document::from_slice(b"second"))
+        });
+        let outcomes = [first.join().unwrap(), second.join().unwrap()];
+        assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|result| matches!(result, Err(DocumentStoreError::AlreadyExists(_))))
+                .count(),
+            1
+        );
+        let check = FileDocumentStore::new(&root).expect("store should reopen");
+        let bytes = check.get(&id).unwrap().unwrap().into_bytes();
+        assert!(bytes == b"first" || bytes == b"second");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

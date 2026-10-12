@@ -278,10 +278,25 @@ impl FileRepository {
     /// Opens an existing file-backed repository or initializes an empty one.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, RepositoryError> {
         let store = FileDocumentStore::new(root)?;
+        // Serialize initialization with commits and other first-time openers.
+        // Always recheck the state file only after owning the same advisory lock
+        // used by commit_change_set. A concurrent opener may observe the lock
+        // briefly; wait for that opener to finish rather than surfacing a
+        // transient initialization conflict to the caller.
+        let _lock = loop {
+            match store.acquire_exclusive_lock() {
+                Ok(lock) => break lock,
+                Err(DocumentStoreError::Conflict(_)) => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(error) => return Err(RepositoryError::Storage(error)),
+            }
+        };
         let state_id = current_state_id()?;
 
         if let Some(document) = store.get(&state_id)? {
             let (version, records, history) = decode_state(document.as_bytes())?;
+            drop(_lock);
             Ok(Self {
                 store,
                 version,
@@ -296,6 +311,7 @@ impl FileRepository {
                 history: Vec::new(),
             };
             repository.persist_current_state()?;
+            drop(_lock);
             Ok(repository)
         }
     }
@@ -638,6 +654,76 @@ mod tests {
 
     fn target() -> ChangeTarget {
         ChangeTarget::Entity(EntityId::new("entity-1").expect("valid entity"))
+    }
+
+    #[test]
+    fn concurrent_first_open_does_not_erase_a_committed_record() {
+        let root = std::env::temp_dir().join(format!(
+            "nizaam-repository-open-race-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first_root = root.clone();
+        let second_root = root.clone();
+        let first =
+            std::thread::spawn(move || FileRepository::open(first_root).expect("first open"));
+        let second =
+            std::thread::spawn(move || FileRepository::open(second_root).expect("second open"));
+        let mut a = first.join().unwrap();
+        let _b = second.join().unwrap();
+        let target = ChangeTarget::Entity(crate::identity::EntityId::new("race-entity").unwrap());
+        let mut changes = ChangeSet::new(Some(a.current_version().unwrap().id().clone()));
+        changes.push(Change::new(ChangeKind::Created, target.clone()));
+        a.commit_change_set(
+            &changes,
+            &[RepositoryRecord::new(
+                target,
+                Document::from_slice(b"saved"),
+            )],
+        )
+        .unwrap();
+        drop(a);
+        let reopened = FileRepository::open(&root).unwrap();
+        assert_eq!(reopened.current_state().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_openers_preserve_records_committed_after_initialization() {
+        let root = temp_root();
+        let mut repository = FileRepository::open(&root).unwrap();
+        let version = repository.current_version().unwrap();
+        let target = ChangeTarget::Entity(EntityId::new("concurrent-commit").unwrap());
+        let mut change_set = ChangeSet::new(Some(version.id().clone()));
+        change_set.push(Change::new(ChangeKind::Created, target.clone()));
+        repository
+            .commit_change_set(
+                &change_set,
+                &[RepositoryRecord::new(
+                    target,
+                    Document::from_slice(b"durable"),
+                )],
+            )
+            .unwrap();
+        drop(repository);
+
+        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut threads = Vec::new();
+        for _ in 0..2 {
+            let root = root.clone();
+            let start = start.clone();
+            threads.push(std::thread::spawn(move || {
+                start.wait();
+                FileRepository::open(root).unwrap().current_state().unwrap()
+            }));
+        }
+        start.wait();
+        for thread in threads {
+            assert_eq!(thread.join().unwrap().len(), 1);
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

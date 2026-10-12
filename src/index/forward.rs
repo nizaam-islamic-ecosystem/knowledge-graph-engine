@@ -70,12 +70,19 @@ impl FileForwardIndex {
         object_reference: ObjectReference,
         target_type: TargetReferenceType,
     ) -> Result<IndexAssignedId, ForwardIndexError> {
+        let _lock = self
+            .store
+            .acquire_exclusive_lock()
+            .map_err(ForwardIndexError::Storage)?;
         let key = reference_key(&object_reference);
-        let target_type = target_type.as_str().to_owned();
-        self.target_types.insert(key, target_type.clone());
-        self.persist()?;
-        let target_type = TargetReferenceType::new(target_type)
-            .map_err(|error| ForwardIndexError::InvalidTargetType(error.to_string()))?;
+        let target_type_value = target_type.as_str().to_owned();
+        let mut next = load_map(&self.store, FORWARD_DOCUMENT)?;
+        next.insert(key, target_type_value);
+        if let Err(error) = self.persist(&next) {
+            let _ = self.reload_from_disk();
+            return Err(error);
+        }
+        self.target_types = next;
         Ok(IndexAssignedId::generate(&target_type, &object_reference))
     }
 
@@ -84,14 +91,23 @@ impl FileForwardIndex {
         &mut self,
         object_reference: &ObjectReference,
     ) -> Result<bool, ForwardIndexError> {
-        let removed = self
-            .target_types
-            .remove(&reference_key(object_reference))
-            .is_some();
-        if removed {
-            self.persist()?;
+        let _lock = self
+            .store
+            .acquire_exclusive_lock()
+            .map_err(ForwardIndexError::Storage)?;
+        let key = reference_key(object_reference);
+        let mut next = load_map(&self.store, FORWARD_DOCUMENT)?;
+        if !next.contains_key(&key) {
+            self.target_types = next;
+            return Ok(false);
         }
-        Ok(removed)
+        next.remove(&key);
+        if let Err(error) = self.persist(&next) {
+            let _ = self.reload_from_disk();
+            return Err(error);
+        }
+        self.target_types = next;
+        Ok(true)
     }
 
     /// Applies one explicit canonical-to-forward index synchronization change.
@@ -99,14 +115,47 @@ impl FileForwardIndex {
         &mut self,
         change: &IndexSynchronizationChange,
     ) -> Result<(), ForwardIndexError> {
-        match change.action() {
-            IndexChangeAction::Upsert => {
-                self.insert(change.reference().clone(), change.target_type().clone())?;
-            }
-            IndexChangeAction::Remove => {
-                self.remove(change.reference())?;
+        self.synchronize_batch(std::slice::from_ref(change))
+    }
+
+    /// Applies a collection of changes and persists the resulting map once.
+    pub fn synchronize_batch(
+        &mut self,
+        changes: &[IndexSynchronizationChange],
+    ) -> Result<(), ForwardIndexError> {
+        let _lock = self
+            .store
+            .acquire_exclusive_lock()
+            .map_err(ForwardIndexError::Storage)?;
+        self.synchronize_batch_locked(changes)
+    }
+
+    pub(crate) fn synchronize_batch_locked(
+        &mut self,
+        changes: &[IndexSynchronizationChange],
+    ) -> Result<(), ForwardIndexError> {
+        let mut next = load_map(&self.store, FORWARD_DOCUMENT)?;
+        for change in changes {
+            let key = reference_key(change.reference());
+            match change.action() {
+                IndexChangeAction::Upsert => {
+                    next.insert(key, change.target_type().as_str().to_owned());
+                }
+                IndexChangeAction::Remove => {
+                    next.remove(&key);
+                }
             }
         }
+        if let Err(error) = self.persist(&next) {
+            let _ = self.reload_from_disk();
+            return Err(error);
+        }
+        self.target_types = next;
+        Ok(())
+    }
+
+    pub(crate) fn reload_from_disk(&mut self) -> Result<(), ForwardIndexError> {
+        self.target_types = load_map(&self.store, FORWARD_DOCUMENT)?;
         Ok(())
     }
 
@@ -115,16 +164,21 @@ impl FileForwardIndex {
     where
         I: IntoIterator<Item = (ObjectReference, TargetReferenceType)>,
     {
+        let _lock = self
+            .store
+            .acquire_exclusive_lock()
+            .map_err(ForwardIndexError::Storage)?;
         let mut next = BTreeMap::new();
         for (reference, target_type) in entries {
             next.insert(reference_key(&reference), target_type.as_str().to_owned());
         }
+        self.persist(&next)?;
         self.target_types = next;
-        self.persist()
+        Ok(())
     }
 
-    fn persist(&mut self) -> Result<(), ForwardIndexError> {
-        let bytes = serde_json::to_vec(&self.target_types)
+    fn persist(&self, target_types: &BTreeMap<String, String>) -> Result<(), ForwardIndexError> {
+        let bytes = serde_json::to_vec(target_types)
             .map_err(|error| ForwardIndexError::Serialization(error.to_string()))?;
         let id =
             DocumentId::new(FORWARD_DOCUMENT).map_err(|_| ForwardIndexError::InvalidDocumentId)?;
@@ -265,6 +319,24 @@ mod tests {
         assert!(index.lookup_forward(&b).unwrap().is_some());
         let _ = std::fs::remove_dir_all(root);
     }
+    #[test]
+    fn separate_open_handles_preserve_each_others_updates() {
+        let root = root();
+        let a = ObjectReference::new("kg", "a").unwrap();
+        let b = ObjectReference::new("kg", "b").unwrap();
+        let target_type = TargetReferenceType::new("entity").unwrap();
+        let mut first = FileForwardIndex::open(&root).unwrap();
+        let mut second = FileForwardIndex::open(&root).unwrap();
+
+        first.insert(a.clone(), target_type.clone()).unwrap();
+        second.insert(b.clone(), target_type.clone()).unwrap();
+
+        let reopened = FileForwardIndex::open(&root).unwrap();
+        assert!(reopened.lookup_forward(&a).unwrap().is_some());
+        assert!(reopened.lookup_forward(&b).unwrap().is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn synchronization_updates_and_removes_one_forward_entry() {
         let root = root();

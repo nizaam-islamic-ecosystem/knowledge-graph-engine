@@ -92,8 +92,26 @@ impl FileSearchIndex {
     /// Opens the search index below an explicit root.
     pub fn open(root: impl Into<std::path::PathBuf>) -> Result<Self, SearchIndexError> {
         let store = FileDocumentStore::new(root.into()).map_err(SearchIndexError::Storage)?;
-        let terms = load(&store, SEARCH_DOCUMENT)?;
-        let references = load(&store, REFERENCES_DOCUMENT)?;
+        let id = DocumentId::new(SEARCH_INDEX_DOCUMENT)
+            .map_err(|_| SearchIndexError::InvalidDocumentId)?;
+        let (terms, references) = if let Some(document) =
+            store.get(&id).map_err(SearchIndexError::Storage)?
+        {
+            let persisted: PersistedSearchIndex = serde_json::from_slice(document.as_bytes())
+                .map_err(|error| SearchIndexError::Serialization(error.to_string()))?;
+            if persisted.terms.values().any(|keys| {
+                keys.iter()
+                    .any(|key| !persisted.references.contains_key(key))
+            }) {
+                return Err(SearchIndexError::CorruptDocument);
+            }
+            (persisted.terms, persisted.references)
+        } else {
+            (
+                load(&store, SEARCH_DOCUMENT)?,
+                load(&store, REFERENCES_DOCUMENT)?,
+            )
+        };
         Ok(Self {
             store,
             terms,
@@ -107,31 +125,56 @@ impl FileSearchIndex {
         reference: ObjectReference,
         text: &str,
     ) -> Result<(), SearchIndexError> {
+        let _lock = self
+            .store
+            .acquire_exclusive_lock()
+            .map_err(SearchIndexError::Storage)?;
+        self.reload_from_disk()?;
+        let mut next_terms = self.terms.clone();
+        let mut next_references = self.references.clone();
         let key = reference_key(&reference);
-        self.remove_terms_for_reference(&key);
-        self.references.insert(
+        remove_terms_for_reference(&mut next_terms, &key);
+        next_references.insert(
             key.clone(),
             StoredReference {
                 source: reference.source().to_owned(),
                 object_reference: reference.object_reference().to_owned(),
             },
         );
-
         for term in tokenize(text) {
-            self.terms.entry(term).or_default().insert(key.clone());
+            next_terms.entry(term).or_default().insert(key.clone());
         }
-        self.persist()
+        if let Err(error) = self.persist(&next_terms, &next_references) {
+            let _ = self.reload_from_disk();
+            return Err(error);
+        }
+        self.terms = next_terms;
+        self.references = next_references;
+        Ok(())
     }
 
     /// Removes one indexed reference.
     pub fn remove(&mut self, reference: &ObjectReference) -> Result<bool, SearchIndexError> {
+        let _lock = self
+            .store
+            .acquire_exclusive_lock()
+            .map_err(SearchIndexError::Storage)?;
+        self.reload_from_disk()?;
         let key = reference_key(reference);
-        let existed = self.references.remove(&key).is_some();
-        if existed {
-            self.remove_terms_for_reference(&key);
-            self.persist()?;
+        if !self.references.contains_key(&key) {
+            return Ok(false);
         }
-        Ok(existed)
+        let mut next_terms = self.terms.clone();
+        let mut next_references = self.references.clone();
+        next_references.remove(&key);
+        remove_terms_for_reference(&mut next_terms, &key);
+        if let Err(error) = self.persist(&next_terms, &next_references) {
+            let _ = self.reload_from_disk();
+            return Err(error);
+        }
+        self.terms = next_terms;
+        self.references = next_references;
+        Ok(true)
     }
 
     /// Applies one explicit canonical-to-search-index synchronization change.
@@ -139,16 +182,80 @@ impl FileSearchIndex {
         &mut self,
         change: &IndexSynchronizationChange,
     ) -> Result<(), SearchIndexError> {
-        match change.action() {
-            IndexChangeAction::Upsert => {
-                let text = change
-                    .search_text()
-                    .ok_or(SearchIndexError::MissingSearchText)?;
-                self.upsert(change.reference().clone(), text)?;
+        self.synchronize_batch(std::slice::from_ref(change))
+    }
+
+    /// Applies a collection of changes and publishes the complete search index
+    /// as one atomic document replacement.
+    pub fn synchronize_batch(
+        &mut self,
+        changes: &[IndexSynchronizationChange],
+    ) -> Result<(), SearchIndexError> {
+        let _lock = self
+            .store
+            .acquire_exclusive_lock()
+            .map_err(SearchIndexError::Storage)?;
+        self.synchronize_batch_locked(changes)
+    }
+
+    pub(crate) fn synchronize_batch_locked(
+        &mut self,
+        changes: &[IndexSynchronizationChange],
+    ) -> Result<(), SearchIndexError> {
+        self.reload_from_disk()?;
+        let mut next_terms = self.terms.clone();
+        let mut next_references = self.references.clone();
+        for change in changes {
+            let key = reference_key(change.reference());
+            match change.action() {
+                IndexChangeAction::Upsert => {
+                    let text = change
+                        .search_text()
+                        .ok_or(SearchIndexError::MissingSearchText)?;
+                    remove_terms_for_reference(&mut next_terms, &key);
+                    next_references.insert(
+                        key.clone(),
+                        StoredReference {
+                            source: change.reference().source().to_owned(),
+                            object_reference: change.reference().object_reference().to_owned(),
+                        },
+                    );
+                    for term in tokenize(text) {
+                        next_terms.entry(term).or_default().insert(key.clone());
+                    }
+                }
+                IndexChangeAction::Remove => {
+                    next_references.remove(&key);
+                    remove_terms_for_reference(&mut next_terms, &key);
+                }
             }
-            IndexChangeAction::Remove => {
-                self.remove(change.reference())?;
+        }
+        if let Err(error) = self.persist(&next_terms, &next_references) {
+            let _ = self.reload_from_disk();
+            return Err(error);
+        }
+        self.terms = next_terms;
+        self.references = next_references;
+        Ok(())
+    }
+
+    pub(crate) fn reload_from_disk(&mut self) -> Result<(), SearchIndexError> {
+        let id = DocumentId::new(SEARCH_INDEX_DOCUMENT)
+            .map_err(|_| SearchIndexError::InvalidDocumentId)?;
+        if let Some(document) = self.store.get(&id).map_err(SearchIndexError::Storage)? {
+            let persisted: PersistedSearchIndex = serde_json::from_slice(document.as_bytes())
+                .map_err(|error| SearchIndexError::Serialization(error.to_string()))?;
+            if persisted.terms.values().any(|keys| {
+                keys.iter()
+                    .any(|key| !persisted.references.contains_key(key))
+            }) {
+                return Err(SearchIndexError::CorruptDocument);
             }
+            self.terms = persisted.terms;
+            self.references = persisted.references;
+        } else {
+            self.terms = load(&self.store, SEARCH_DOCUMENT)?;
+            self.references = load(&self.store, REFERENCES_DOCUMENT)?;
         }
         Ok(())
     }
@@ -158,11 +265,15 @@ impl FileSearchIndex {
     where
         I: IntoIterator<Item = (ObjectReference, String)>,
     {
-        self.terms.clear();
-        self.references.clear();
+        let _lock = self
+            .store
+            .acquire_exclusive_lock()
+            .map_err(SearchIndexError::Storage)?;
+        let mut next_terms: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut next_references: BTreeMap<String, StoredReference> = BTreeMap::new();
         for (reference, text) in entries {
             let key = reference_key(&reference);
-            self.references.insert(
+            next_references.insert(
                 key.clone(),
                 StoredReference {
                     source: reference.source().to_owned(),
@@ -170,10 +281,13 @@ impl FileSearchIndex {
                 },
             );
             for term in tokenize(&text) {
-                self.terms.entry(term).or_default().insert(key.clone());
+                next_terms.entry(term).or_default().insert(key.clone());
             }
         }
-        self.persist()
+        self.persist(&next_terms, &next_references)?;
+        self.terms = next_terms;
+        self.references = next_references;
+        Ok(())
     }
 
     /// Executes deterministic lexical search. Results are ordered by descending
@@ -207,27 +321,16 @@ impl FileSearchIndex {
         Ok(hits)
     }
 
-    fn remove_terms_for_reference(&mut self, key: &str) {
-        let terms = self.terms.keys().cloned().collect::<Vec<_>>();
-        let mut empty_terms = Vec::new();
-
-        for term in terms {
-            if let Some(keys) = self.terms.get_mut(&term) {
-                keys.remove(key);
-                if keys.is_empty() {
-                    empty_terms.push(term);
-                }
-            }
-        }
-
-        for term in empty_terms {
-            self.terms.remove(&term);
-        }
-    }
-
-    fn persist(&mut self) -> Result<(), SearchIndexError> {
-        persist_document(&mut self.store, SEARCH_DOCUMENT, &self.terms)?;
-        persist_document(&mut self.store, REFERENCES_DOCUMENT, &self.references)
+    fn persist(
+        &self,
+        terms: &BTreeMap<String, BTreeSet<String>>,
+        references: &BTreeMap<String, StoredReference>,
+    ) -> Result<(), SearchIndexError> {
+        let persisted = PersistedSearchIndex {
+            terms: terms.clone(),
+            references: references.clone(),
+        };
+        persist_document(&self.store, SEARCH_INDEX_DOCUMENT, &persisted)
     }
 }
 
@@ -269,6 +372,29 @@ impl std::error::Error for SearchIndexError {}
 
 const SEARCH_DOCUMENT: &str = "indexes/search.json";
 const REFERENCES_DOCUMENT: &str = "indexes/search-references.json";
+const SEARCH_INDEX_DOCUMENT: &str = "indexes/search-index.json";
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct PersistedSearchIndex {
+    terms: BTreeMap<String, BTreeSet<String>>,
+    references: BTreeMap<String, StoredReference>,
+}
+
+fn remove_terms_for_reference(terms: &mut BTreeMap<String, BTreeSet<String>>, key: &str) {
+    let term_names = terms.keys().cloned().collect::<Vec<_>>();
+    let mut empty_terms = Vec::new();
+    for term in term_names {
+        if let Some(keys) = terms.get_mut(&term) {
+            keys.remove(key);
+            if keys.is_empty() {
+                empty_terms.push(term);
+            }
+        }
+    }
+    for term in empty_terms {
+        terms.remove(&term);
+    }
+}
 
 fn reference_key(reference: &ObjectReference) -> String {
     format!(
@@ -297,7 +423,7 @@ where
 }
 
 fn persist_document<T: serde::Serialize>(
-    store: &mut FileDocumentStore,
+    store: &FileDocumentStore,
     name: &str,
     value: &T,
 ) -> Result<(), SearchIndexError> {
@@ -349,6 +475,25 @@ mod tests {
         assert_eq!(reopened.search("quran").unwrap()[0].reference(), &a);
         let _ = std::fs::remove_dir_all(root);
     }
+    #[test]
+    fn separate_open_handles_preserve_search_updates_in_one_atomic_document() {
+        let root = root();
+        let a = ObjectReference::new("kg", "a").unwrap();
+        let b = ObjectReference::new("kg", "b").unwrap();
+        let mut first = FileSearchIndex::open(&root).unwrap();
+        let mut second = FileSearchIndex::open(&root).unwrap();
+
+        first.upsert(a.clone(), "quran").unwrap();
+        second.upsert(b.clone(), "hadith").unwrap();
+
+        let combined = root.join(SEARCH_INDEX_DOCUMENT);
+        assert!(combined.is_file());
+        let reopened = FileSearchIndex::open(&root).unwrap();
+        assert_eq!(reopened.search("quran").unwrap()[0].reference(), &a);
+        assert_eq!(reopened.search("hadith").unwrap()[0].reference(), &b);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn synchronization_requires_search_text_for_upserts() {
         let root = root();

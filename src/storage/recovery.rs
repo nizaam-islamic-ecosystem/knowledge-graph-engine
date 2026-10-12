@@ -13,7 +13,7 @@
 use core::fmt;
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -114,8 +114,9 @@ impl RecoveryCommit {
         &self.change_set
     }
 
-    /// Returns the resulting canonical records represented by this recovery
-    /// commit.
+    /// Returns changed-target records carried by this recovery commit.
+    /// Recovery merges these records into the snapshot state rather than
+    /// treating them as a complete replacement for all canonical records.
     #[must_use]
     pub fn records(&self) -> &[RepositoryRecord] {
         &self.records
@@ -256,6 +257,10 @@ impl FileRecoveryJournal {
     /// Opens or creates the recovery journal below the supplied Nizaam root.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, RecoveryError> {
         let root = root.into();
+        let store = FileDocumentStore::new(root.clone()).map_err(RecoveryError::from)?;
+        let _lock = store
+            .acquire_exclusive_lock()
+            .map_err(RecoveryError::from)?;
         let directory = root.join(RECOVERY_DIRECTORY);
 
         fs::create_dir_all(&directory).map_err(|error: io::Error| {
@@ -264,6 +269,7 @@ impl FileRecoveryJournal {
                 directory.display()
             ))
         })?;
+        sync_directory(&directory)?;
 
         Ok(Self {
             path: root.join(JOURNAL_DOCUMENT),
@@ -277,12 +283,23 @@ impl FileRecoveryJournal {
     }
 
     fn append(&self, value: Value) -> Result<(), RecoveryError> {
-        let bytes = serde_json::to_vec(&value)
+        let root = self.path.parent().and_then(Path::parent).ok_or_else(|| {
+            RecoveryError::Storage("recovery journal root could not be resolved".to_owned())
+        })?;
+        let store = FileDocumentStore::new(root).map_err(RecoveryError::from)?;
+        let _lock = store
+            .acquire_exclusive_lock()
+            .map_err(RecoveryError::from)?;
+        let mut line = serde_json::to_vec(&value)
             .map_err(|error| RecoveryError::Storage(error.to_string()))?;
+        line.push(b'\n');
 
+        let was_missing = !self.path.exists();
+        #[allow(clippy::suspicious_open_options)]
         let mut file = OpenOptions::new()
             .create(true)
-            .append(true)
+            .read(true)
+            .write(true)
             .open(&self.path)
             .map_err(|error| {
                 RecoveryError::Storage(format!(
@@ -291,15 +308,73 @@ impl FileRecoveryJournal {
                 ))
             })?;
 
-        file.write_all(&bytes)
-            .and_then(|_| file.write_all(b"\n"))
+        // A missing newline means the last append may have been interrupted.
+        // Discard only that unterminated tail before adding the next record.
+        let mut existing = Vec::new();
+        file.read_to_end(&mut existing).map_err(|error| {
+            RecoveryError::Storage(format!(
+                "failed to read recovery journal '{}': {error}",
+                self.path.display()
+            ))
+        })?;
+        if !existing.is_empty() && existing.last() != Some(&b'\n') {
+            let tail_start = existing
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |position| position + 1);
+            let tail = &existing[tail_start..];
+            if serde_json::from_slice::<Value>(tail).is_ok() {
+                // A complete JSON record whose newline was lost is still valid;
+                // terminate it before appending rather than discarding it.
+                file.seek(SeekFrom::End(0))
+                    .and_then(|_| file.write_all(b"\n"))
+                    .map_err(|error| {
+                        RecoveryError::Storage(format!(
+                            "failed to finish recovery journal line '{}': {error}",
+                            self.path.display()
+                        ))
+                    })?;
+                file.sync_all().map_err(|error| {
+                    RecoveryError::Storage(format!(
+                        "failed to durably finish recovery journal line '{}': {error}",
+                        self.path.display()
+                    ))
+                })?;
+            } else {
+                // An invalid unterminated final line is an interrupted append.
+                // Truncate only that tail; all earlier completed lines remain.
+                file.set_len(tail_start as u64).map_err(|error| {
+                    RecoveryError::Storage(format!(
+                        "failed to truncate incomplete recovery journal tail '{}': {error}",
+                        self.path.display()
+                    ))
+                })?;
+                file.sync_all().map_err(|error| {
+                    RecoveryError::Storage(format!(
+                        "failed to durably truncate recovery journal '{}': {error}",
+                        self.path.display()
+                    ))
+                })?;
+            }
+        }
+        file.seek(SeekFrom::End(0)).map_err(|error| {
+            RecoveryError::Storage(format!(
+                "failed to seek recovery journal '{}': {error}",
+                self.path.display()
+            ))
+        })?;
+        file.write_all(&line)
             .and_then(|_| file.sync_all())
             .map_err(|error| {
                 RecoveryError::Storage(format!(
                     "failed to durably append recovery journal '{}': {error}",
                     self.path.display()
                 ))
-            })
+            })?;
+        if was_missing {
+            sync_directory(&self.path)?;
+        }
+        Ok(())
     }
 
     fn read_values(&self) -> Result<Vec<Value>, RecoveryError> {
@@ -307,36 +382,47 @@ impl FileRecoveryJournal {
             return Ok(Vec::new());
         }
 
-        let file = File::open(&self.path).map_err(|error| {
+        let bytes = fs::read(&self.path).map_err(|error| {
             RecoveryError::Storage(format!(
-                "failed to open recovery journal '{}': {error}",
+                "failed to read recovery journal '{}': {error}",
                 self.path.display()
             ))
         })?;
-
-        let reader = BufReader::new(file);
         let mut values = Vec::new();
+        let mut start = 0usize;
+        let mut line_number = 0usize;
 
-        for (line_number, line) in reader.lines().enumerate() {
-            let line = line.map_err(|error| {
-                RecoveryError::Storage(format!(
-                    "failed to read recovery journal line {}: {error}",
-                    line_number + 1
-                ))
-            })?;
-
-            if line.trim().is_empty() {
+        for (index, byte) in bytes.iter().enumerate() {
+            if *byte != b'\n' {
                 continue;
             }
-
-            let value = serde_json::from_str::<Value>(&line).map_err(|error| {
+            line_number += 1;
+            let line = &bytes[start..index];
+            start = index + 1;
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            let value = serde_json::from_slice::<Value>(line).map_err(|error| {
                 RecoveryError::CorruptJournal(format!(
-                    "invalid JSON at journal line {}: {error}",
-                    line_number + 1
+                    "invalid JSON at journal line {line_number}: {error}"
                 ))
             })?;
-
             values.push(value);
+        }
+
+        if start < bytes.len() {
+            // Accept a complete JSON value without a final newline. If parsing
+            // fails, ignore only this unterminated tail: a later append will
+            // truncate it. Completed newline-terminated lines above are strict.
+            let tail = &bytes[start..];
+            if !tail.iter().all(u8::is_ascii_whitespace)
+                && let Ok(value) = serde_json::from_slice::<Value>(tail)
+            {
+                values.push(value);
+            }
+            // A malformed unterminated final tail is treated as an
+            // interrupted append. Newline-terminated lines above are always
+            // parsed strictly and malformed completed entries are rejected.
         }
 
         Ok(values)
@@ -437,6 +523,24 @@ impl RecoveryJournal for FileRecoveryJournal {
 ///
 /// The journal is replayed only when each entry's base version matches the
 /// version currently represented by the reconstructed state.
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<(), RecoveryError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            RecoveryError::Storage(format!(
+                "failed to sync recovery directory '{}': {error}",
+                parent.display()
+            ))
+        })
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<(), RecoveryError> {
+    Ok(())
+}
+
 pub fn recover_from_snapshot<J: RecoveryJournal + ?Sized>(
     snapshot: &Snapshot,
     journal: &J,
@@ -450,19 +554,46 @@ pub fn recover_from_snapshot<J: RecoveryJournal + ?Sized>(
     let mut state = RecoveredState::from_snapshot(snapshot);
 
     for commit in journal.committed()? {
-        if commit.version().id() == state.version.id() {
+        // A full append-only journal may contain the history used to construct
+        // this snapshot. Skip that prefix by logical sequence; later entries
+        // must still chain from the snapshot/current replay version.
+        if commit.version().sequence() < state.version.sequence() {
+            continue;
+        }
+        if commit.version().sequence() == state.version.sequence() {
+            if commit.version().id() != state.version.id() {
+                return Err(RecoveryError::VersionConflict {
+                    expected: state.version.id().clone(),
+                    actual: commit.base_version().clone(),
+                });
+            }
             continue;
         }
 
-        if commit.base_version() != state.version.id() {
+        if commit.base_version() != state.version.id()
+            || commit.version().sequence() != state.version.sequence().saturating_add(1)
+        {
             return Err(RecoveryError::VersionConflict {
                 expected: state.version.id().clone(),
                 actual: commit.base_version().clone(),
             });
         }
 
+        // Journal records represent the changed targets, not a whole-state
+        // replacement. Preserve untouched snapshot records and upsert each
+        // record supplied by this committed change.
+        for updated_record in commit.records() {
+            if let Some(existing) = state
+                .records
+                .iter_mut()
+                .find(|existing| existing.target() == updated_record.target())
+            {
+                *existing = updated_record.clone();
+            } else {
+                state.records.push(updated_record.clone());
+            }
+        }
         state.version = commit.version().clone();
-        state.records = commit.records().to_vec();
         state.replayed_change_sets.push(commit.change_set().clone());
     }
 
@@ -811,6 +942,201 @@ mod tests {
             &[prepared.change_set().clone()]
         );
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_merges_changed_records_and_preserves_untouched_snapshot_records() {
+        let root = temp_root();
+        let mut journal = FileRecoveryJournal::open(&root).expect("journal should open");
+        let base = KgVersion::initial();
+        let untouched = RepositoryRecord::new(
+            ChangeTarget::Entity(EntityId::new("untouched").unwrap()),
+            Document::from_slice(b"keep"),
+        );
+        let snapshot = Snapshot::new(base.clone(), vec![untouched.clone()]).unwrap();
+        let new_target = ChangeTarget::Entity(EntityId::new("new-record").unwrap());
+        let mut changes = ChangeSet::new(Some(base.id().clone()));
+        changes.push(Change::new(ChangeKind::Created, new_target.clone()));
+        let next = KgVersion::next(&base, changes.id().clone());
+        let commit = RecoveryCommit::new(
+            base.id().clone(),
+            next.clone(),
+            changes,
+            vec![RepositoryRecord::new(
+                new_target,
+                Document::from_slice(b"new"),
+            )],
+        )
+        .unwrap();
+        journal.prepare(&commit).unwrap();
+        journal.commit(commit.change_set().id()).unwrap();
+
+        let recovered = recover_from_snapshot(&snapshot, &journal).unwrap();
+        assert_eq!(recovered.version(), &next);
+        assert_eq!(recovered.records().len(), 2);
+        assert!(recovered.records().iter().any(|item| item == &untouched));
+        assert!(
+            recovered
+                .records()
+                .iter()
+                .any(|item| item.target().id() == "new-record")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_replaces_a_changed_snapshot_record_without_duplicating_it() {
+        let root = temp_root();
+        let mut journal = FileRecoveryJournal::open(&root).unwrap();
+        let base = KgVersion::initial();
+        let target = ChangeTarget::Entity(EntityId::new("existing").unwrap());
+        let snapshot_record = RepositoryRecord::new(target.clone(), Document::from_slice(b"old"));
+        let snapshot = Snapshot::new(base.clone(), vec![snapshot_record]).unwrap();
+        let mut changes = ChangeSet::new(Some(base.id().clone()));
+        changes.push(Change::new(ChangeKind::Updated, target.clone()));
+        let next = KgVersion::next(&base, changes.id().clone());
+        let commit = RecoveryCommit::new(
+            base.id().clone(),
+            next.clone(),
+            changes,
+            vec![RepositoryRecord::new(target, Document::from_slice(b"new"))],
+        )
+        .unwrap();
+        journal.prepare(&commit).unwrap();
+        journal.commit(commit.change_set().id()).unwrap();
+
+        let recovered = recover_from_snapshot(&snapshot, &journal).unwrap();
+        assert_eq!(recovered.version(), &next);
+        assert_eq!(recovered.records().len(), 1);
+        assert_eq!(recovered.records()[0].document().as_bytes(), b"new");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_from_later_snapshot_skips_journal_prefix_and_replays_later_commit() {
+        let root = temp_root();
+        let mut journal = FileRecoveryJournal::open(&root).unwrap();
+        let v0 = KgVersion::initial();
+        let a = ChangeTarget::Entity(EntityId::new("a").unwrap());
+        let mut c1 = ChangeSet::new(Some(v0.id().clone()));
+        c1.push(Change::new(ChangeKind::Created, a.clone()));
+        let v1 = KgVersion::next(&v0, c1.id().clone());
+        let commit1 = RecoveryCommit::new(
+            v0.id().clone(),
+            v1.clone(),
+            c1,
+            vec![RepositoryRecord::new(
+                a.clone(),
+                Document::from_slice(b"v1"),
+            )],
+        )
+        .unwrap();
+        journal.prepare(&commit1).unwrap();
+        journal.commit(commit1.change_set().id()).unwrap();
+
+        let b = ChangeTarget::Entity(EntityId::new("b").unwrap());
+        let mut c2 = ChangeSet::new(Some(v1.id().clone()));
+        c2.push(Change::new(ChangeKind::Created, b.clone()));
+        let v2 = KgVersion::next(&v1, c2.id().clone());
+        let commit2 = RecoveryCommit::new(
+            v1.id().clone(),
+            v2.clone(),
+            c2,
+            vec![RepositoryRecord::new(
+                b.clone(),
+                Document::from_slice(b"v2"),
+            )],
+        )
+        .unwrap();
+        journal.prepare(&commit2).unwrap();
+        journal.commit(commit2.change_set().id()).unwrap();
+
+        let snapshot = Snapshot::new(
+            v2.clone(),
+            vec![
+                RepositoryRecord::new(a.clone(), Document::from_slice(b"v1")),
+                RepositoryRecord::new(b.clone(), Document::from_slice(b"v2")),
+            ],
+        )
+        .unwrap();
+        let c3_target = ChangeTarget::Entity(EntityId::new("c").unwrap());
+        let mut c3 = ChangeSet::new(Some(v2.id().clone()));
+        c3.push(Change::new(ChangeKind::Created, c3_target.clone()));
+        let v3 = KgVersion::next(&v2, c3.id().clone());
+        let commit3 = RecoveryCommit::new(
+            v2.id().clone(),
+            v3.clone(),
+            c3,
+            vec![RepositoryRecord::new(
+                c3_target,
+                Document::from_slice(b"v3"),
+            )],
+        )
+        .unwrap();
+        journal.prepare(&commit3).unwrap();
+        journal.commit(commit3.change_set().id()).unwrap();
+
+        let recovered = recover_from_snapshot(&snapshot, &journal).unwrap();
+        assert_eq!(recovered.version(), &v3);
+        assert_eq!(recovered.records().len(), 3);
+        assert_eq!(
+            recovered.replayed_change_sets(),
+            &[commit3.change_set().clone()]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn incomplete_unterminated_journal_tail_is_ignored_and_repaired_on_append() {
+        let root = temp_root();
+        let mut journal = FileRecoveryJournal::open(&root).unwrap();
+        let first = commit(&KgVersion::initial());
+        journal.prepare(&first).unwrap();
+        journal.commit(first.change_set().id()).unwrap();
+        {
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(journal.path())
+                .unwrap();
+            file.write_all(b"{partial").unwrap();
+            file.sync_all().unwrap();
+        }
+        assert_eq!(journal.committed().unwrap(), vec![first.clone()]);
+
+        let next = commit(first.version());
+        journal.prepare(&next).unwrap();
+        journal.commit(next.change_set().id()).unwrap();
+        assert_eq!(journal.committed().unwrap(), vec![first, next]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn complete_unterminated_journal_record_is_preserved_before_next_append() {
+        let root = temp_root();
+        let mut journal = FileRecoveryJournal::open(&root).unwrap();
+        let first = commit(&KgVersion::initial());
+        let encoded = serde_json::to_vec(&json!({
+            "format_version": JOURNAL_FORMAT_VERSION,
+            "type": "prepare",
+            "change_set_id": first.change_set().id().as_str(),
+            "commit": encode_commit(&first),
+        }))
+        .unwrap();
+        {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(journal.path())
+                .unwrap();
+            file.write_all(&encoded).unwrap();
+            file.sync_all().unwrap();
+        }
+        // The complete prepare record is parseable but has no newline; appending
+        // a commit marker must finish this line and preserve it.
+        journal.commit(first.change_set().id()).unwrap();
+        assert_eq!(journal.committed().unwrap(), vec![first]);
         let _ = fs::remove_dir_all(root);
     }
 

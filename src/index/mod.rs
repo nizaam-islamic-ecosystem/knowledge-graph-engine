@@ -21,7 +21,7 @@ pub use search::{
     FileSearchIndex, IndexSearchAccess, KgSearchHit, KgSearchIndexAccess, SearchIndexError, search,
 };
 
-use crate::storage::FileDocumentStore;
+use crate::storage::{Document, DocumentId, DocumentStore, FileDocumentStore};
 
 /// Explicit physical change to apply to the KG-owned derived indexes.
 ///
@@ -198,6 +198,7 @@ pub struct KgIndexSynchronizer {
     forward: FileForwardIndex,
     reverse: FileReverseIndex,
     search: FileSearchIndex,
+    state_store: FileDocumentStore,
     forward_state: KgIndexState,
     reverse_state: KgIndexState,
     search_state: KgIndexState,
@@ -212,15 +213,30 @@ impl KgIndexSynchronizer {
     /// Opens all KG-owned physical indexes below one storage root.
     pub fn open(root: impl Into<std::path::PathBuf>) -> Result<Self, IndexSynchronizationError> {
         let root = root.into();
+        let state_store =
+            FileDocumentStore::new(root.clone()).map_err(IndexSynchronizationError::Storage)?;
+        // Read the three index files and their state snapshots while holding the
+        // same lock used for synchronization, preventing a mixed-generation open.
+        let _lock = state_store
+            .acquire_exclusive_lock()
+            .map_err(IndexSynchronizationError::Storage)?;
+        let forward_state = load_index_state(&state_store, KgIndexKind::Forward)?;
+        let reverse_state = load_index_state(&state_store, KgIndexKind::Reverse)?;
+        let search_state = load_index_state(&state_store, KgIndexKind::Search)?;
+        let forward =
+            FileForwardIndex::open(root.clone()).map_err(IndexSynchronizationError::Forward)?;
+        let reverse =
+            FileReverseIndex::open(root.clone()).map_err(IndexSynchronizationError::Reverse)?;
+        let search = FileSearchIndex::open(root).map_err(IndexSynchronizationError::Search)?;
+        drop(_lock);
         Ok(Self {
-            forward: FileForwardIndex::open(root.clone())
-                .map_err(IndexSynchronizationError::Forward)?,
-            reverse: FileReverseIndex::open(root.clone())
-                .map_err(IndexSynchronizationError::Reverse)?,
-            search: FileSearchIndex::open(root).map_err(IndexSynchronizationError::Search)?,
-            forward_state: KgIndexState::uninitialized(KgIndexKind::Forward),
-            reverse_state: KgIndexState::uninitialized(KgIndexKind::Reverse),
-            search_state: KgIndexState::uninitialized(KgIndexKind::Search),
+            forward,
+            reverse,
+            search,
+            state_store,
+            forward_state,
+            reverse_state,
+            search_state,
         })
     }
 
@@ -254,109 +270,166 @@ impl KgIndexSynchronizer {
         &self.search_state
     }
 
+    fn refresh_states_from_disk(&mut self) -> Result<(), String> {
+        self.forward_state = load_index_state(&self.state_store, KgIndexKind::Forward)
+            .map_err(|error| error.to_string())?;
+        self.reverse_state = load_index_state(&self.state_store, KgIndexKind::Reverse)
+            .map_err(|error| error.to_string())?;
+        self.search_state = load_index_state(&self.state_store, KgIndexKind::Search)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    fn state_can_apply(state: &KgIndexState, commit: &crate::storage::CommittedChangeSet) -> bool {
+        let base = commit
+            .change_set()
+            .base_version()
+            .map(|version| version.as_str());
+        let built_from = state.version().built_from_kg_version();
+        if built_from == commit.version().id().as_str() {
+            return true; // Idempotent retry of a commit already marked synchronized.
+        }
+        let has_no_history = built_from == "uninitialized";
+        let is_initial_transition = commit.version().sequence() == 1 && base.is_some();
+        if has_no_history {
+            is_initial_transition
+        } else {
+            base == Some(built_from)
+        }
+    }
+
     fn synchronize_forward(
         &mut self,
-        kg_version: &str,
+        commit: &crate::storage::CommittedChangeSet,
         updates: &[IndexSynchronizationChange],
     ) -> IndexSynchronizationResult {
-        if updates.is_empty() {
-            let state = self.forward_state.clone().mark_synchronization_failed();
-            self.forward_state = state.clone();
-            return IndexSynchronizationResult::failed(
-                state,
-                "no explicit forward-index projection was supplied",
+        let previous = self.forward_state.clone();
+        if !Self::state_can_apply(&previous, commit) {
+            return self.record_failure(
+                KgIndexKind::Forward,
+                "forward index is not at the committed Change Set base version",
             );
         }
-
-        for update in updates {
-            if let Err(error) = self.forward.synchronize(update) {
-                let state = self.forward_state.clone().mark_synchronization_failed();
-                self.forward_state = state.clone();
-                return IndexSynchronizationResult::failed(state, error.to_string());
-            }
+        if previous.version().built_from_kg_version() == commit.version().id().as_str() {
+            return IndexSynchronizationResult::synchronized(previous);
         }
-
-        match self.forward_state.synchronized_to(kg_version) {
-            Ok(state) => {
-                self.forward_state = state.clone();
-                IndexSynchronizationResult::synchronized(state)
+        if let Err(error) = self.forward.synchronize_batch_locked(updates) {
+            return self.record_failure(KgIndexKind::Forward, &error.to_string());
+        }
+        let next = match previous.synchronized_to(commit.version().id().as_str()) {
+            Ok(state) => state,
+            Err(error) => return self.record_failure(KgIndexKind::Forward, &error.to_string()),
+        };
+        match persist_index_state(&self.state_store, &next) {
+            Ok(()) => {
+                self.forward_state = next.clone();
+                IndexSynchronizationResult::synchronized(next)
             }
             Err(error) => {
-                let state = self.forward_state.clone().mark_synchronization_failed();
-                self.forward_state = state.clone();
-                IndexSynchronizationResult::failed(state, error.to_string())
+                let _ = self.refresh_states_from_disk();
+                self.record_failure(
+                    KgIndexKind::Forward,
+                    &format!("index data saved but state persistence failed: {error}"),
+                )
             }
         }
     }
 
     fn synchronize_reverse(
         &mut self,
-        kg_version: &str,
+        commit: &crate::storage::CommittedChangeSet,
         updates: &[IndexSynchronizationChange],
     ) -> IndexSynchronizationResult {
-        if updates.is_empty() {
-            let state = self.reverse_state.clone().mark_synchronization_failed();
-            self.reverse_state = state.clone();
-            return IndexSynchronizationResult::failed(
-                state,
-                "no explicit reverse-index projection was supplied",
+        let previous = self.reverse_state.clone();
+        if !Self::state_can_apply(&previous, commit) {
+            return self.record_failure(
+                KgIndexKind::Reverse,
+                "reverse index is not at the committed Change Set base version",
             );
         }
-
-        for update in updates {
-            if let Err(error) = self.reverse.synchronize(update) {
-                let state = self.reverse_state.clone().mark_synchronization_failed();
-                self.reverse_state = state.clone();
-                return IndexSynchronizationResult::failed(state, error.to_string());
-            }
+        if previous.version().built_from_kg_version() == commit.version().id().as_str() {
+            return IndexSynchronizationResult::synchronized(previous);
         }
-
-        match self.reverse_state.synchronized_to(kg_version) {
-            Ok(state) => {
-                self.reverse_state = state.clone();
-                IndexSynchronizationResult::synchronized(state)
+        if let Err(error) = self.reverse.synchronize_batch_locked(updates) {
+            return self.record_failure(KgIndexKind::Reverse, &error.to_string());
+        }
+        let next = match previous.synchronized_to(commit.version().id().as_str()) {
+            Ok(state) => state,
+            Err(error) => return self.record_failure(KgIndexKind::Reverse, &error.to_string()),
+        };
+        match persist_index_state(&self.state_store, &next) {
+            Ok(()) => {
+                self.reverse_state = next.clone();
+                IndexSynchronizationResult::synchronized(next)
             }
             Err(error) => {
-                let state = self.reverse_state.clone().mark_synchronization_failed();
-                self.reverse_state = state.clone();
-                IndexSynchronizationResult::failed(state, error.to_string())
+                let _ = self.refresh_states_from_disk();
+                self.record_failure(
+                    KgIndexKind::Reverse,
+                    &format!("index data saved but state persistence failed: {error}"),
+                )
             }
         }
     }
 
     fn synchronize_search(
         &mut self,
-        kg_version: &str,
+        commit: &crate::storage::CommittedChangeSet,
         updates: &[IndexSynchronizationChange],
     ) -> IndexSynchronizationResult {
-        if updates.is_empty() {
-            let state = self.search_state.clone().mark_synchronization_failed();
-            self.search_state = state.clone();
-            return IndexSynchronizationResult::failed(
-                state,
-                "no explicit search-index projection was supplied",
+        let previous = self.search_state.clone();
+        if !Self::state_can_apply(&previous, commit) {
+            return self.record_failure(
+                KgIndexKind::Search,
+                "search index is not at the committed Change Set base version",
             );
         }
-
-        for update in updates {
-            if let Err(error) = self.search.synchronize(update) {
-                let state = self.search_state.clone().mark_synchronization_failed();
-                self.search_state = state.clone();
-                return IndexSynchronizationResult::failed(state, error.to_string());
-            }
+        if previous.version().built_from_kg_version() == commit.version().id().as_str() {
+            return IndexSynchronizationResult::synchronized(previous);
         }
-
-        match self.search_state.synchronized_to(kg_version) {
-            Ok(state) => {
-                self.search_state = state.clone();
-                IndexSynchronizationResult::synchronized(state)
+        if let Err(error) = self.search.synchronize_batch_locked(updates) {
+            return self.record_failure(KgIndexKind::Search, &error.to_string());
+        }
+        let next = match previous.synchronized_to(commit.version().id().as_str()) {
+            Ok(state) => state,
+            Err(error) => return self.record_failure(KgIndexKind::Search, &error.to_string()),
+        };
+        match persist_index_state(&self.state_store, &next) {
+            Ok(()) => {
+                self.search_state = next.clone();
+                IndexSynchronizationResult::synchronized(next)
             }
             Err(error) => {
-                let state = self.search_state.clone().mark_synchronization_failed();
-                self.search_state = state.clone();
-                IndexSynchronizationResult::failed(state, error.to_string())
+                let _ = self.refresh_states_from_disk();
+                self.record_failure(
+                    KgIndexKind::Search,
+                    &format!("index data saved but state persistence failed: {error}"),
+                )
             }
         }
+    }
+
+    fn record_failure(&mut self, kind: KgIndexKind, message: &str) -> IndexSynchronizationResult {
+        let state = match kind {
+            KgIndexKind::Forward => self.forward_state.clone().mark_synchronization_failed(),
+            KgIndexKind::Reverse => self.reverse_state.clone().mark_synchronization_failed(),
+            KgIndexKind::Search => self.search_state.clone().mark_synchronization_failed(),
+        };
+        if let Err(error) = persist_index_state(&self.state_store, &state) {
+            let combined = format!("{message}; failed to persist index state: {error}");
+            match kind {
+                KgIndexKind::Forward => self.forward_state = state.clone(),
+                KgIndexKind::Reverse => self.reverse_state = state.clone(),
+                KgIndexKind::Search => self.search_state = state.clone(),
+            }
+            return IndexSynchronizationResult::failed(state, combined);
+        }
+        match kind {
+            KgIndexKind::Forward => self.forward_state = state.clone(),
+            KgIndexKind::Reverse => self.reverse_state = state.clone(),
+            KgIndexKind::Search => self.search_state = state.clone(),
+        }
+        IndexSynchronizationResult::failed(state, message)
     }
 }
 
@@ -371,37 +444,114 @@ impl crate::storage::RepositoryIndexSynchronizer<IndexSynchronizationChange>
         updates: &[IndexSynchronizationChange],
     ) -> Self::Report {
         let kg_version = commit.version().id().as_str();
-        let updates_are_valid = updates.iter().all(|update| {
-            commit
-                .change_set()
-                .changes()
-                .iter()
-                .any(|change| change.target() == update.target())
-        });
-
-        if !updates_are_valid {
-            let message =
-                "index synchronization projection does not match the committed Change Set";
-            let forward_state = self.forward_state.clone().mark_synchronization_failed();
-            let reverse_state = self.reverse_state.clone().mark_synchronization_failed();
-            let search_state = self.search_state.clone().mark_synchronization_failed();
-            self.forward_state = forward_state.clone();
-            self.reverse_state = reverse_state.clone();
-            self.search_state = search_state.clone();
+        let _lock = match self.state_store.acquire_exclusive_lock() {
+            Ok(lock) => lock,
+            Err(error) => {
+                let message = format!("failed to lock derived-index synchronization: {error}");
+                // Do not mutate persistent state without the lock. Report each
+                // index as unavailable/stale in this attempt; the next owner of
+                // the lock will reload and persist the appropriate status.
+                let forward_state = self.forward_state.clone().mark_synchronization_failed();
+                let reverse_state = self.reverse_state.clone().mark_synchronization_failed();
+                let search_state = self.search_state.clone().mark_synchronization_failed();
+                let forward = IndexSynchronizationResult::failed(forward_state, &message);
+                let reverse = IndexSynchronizationResult::failed(reverse_state, &message);
+                let search = IndexSynchronizationResult::failed(search_state, &message);
+                return IndexSynchronizationReport {
+                    canonical_version: kg_version.to_owned(),
+                    forward,
+                    reverse,
+                    search,
+                };
+            }
+        };
+        if let Err(message) = self.refresh_states_from_disk() {
+            let forward = self.record_failure(KgIndexKind::Forward, &message);
+            let reverse = self.record_failure(KgIndexKind::Reverse, &message);
+            let search = self.record_failure(KgIndexKind::Search, &message);
             return IndexSynchronizationReport {
                 canonical_version: kg_version.to_owned(),
-                forward: IndexSynchronizationResult::failed(forward_state, message),
-                reverse: IndexSynchronizationResult::failed(reverse_state, message),
-                search: IndexSynchronizationResult::failed(search_state, message),
+                forward,
+                reverse,
+                search,
+            };
+        }
+
+        let changes = commit.change_set().changes();
+        let updates_are_valid = updates.iter().all(|update| {
+            changes
+                .iter()
+                .any(|change| change.target() == update.target())
+        }) && changes.iter().all(|change| {
+            updates
+                .iter()
+                .any(|update| update.target() == change.target())
+        });
+        if !updates_are_valid {
+            let message = "index synchronization projections must cover every committed Change Set target and contain no unrelated targets";
+            let forward = self.record_failure(KgIndexKind::Forward, message);
+            let reverse = self.record_failure(KgIndexKind::Reverse, message);
+            let search = self.record_failure(KgIndexKind::Search, message);
+            return IndexSynchronizationReport {
+                canonical_version: kg_version.to_owned(),
+                forward,
+                reverse,
+                search,
             };
         }
 
         IndexSynchronizationReport {
             canonical_version: kg_version.to_owned(),
-            forward: self.synchronize_forward(kg_version, updates),
-            reverse: self.synchronize_reverse(kg_version, updates),
-            search: self.synchronize_search(kg_version, updates),
+            forward: self.synchronize_forward(commit, updates),
+            reverse: self.synchronize_reverse(commit, updates),
+            search: self.synchronize_search(commit, updates),
         }
+    }
+}
+
+const FORWARD_STATE_DOCUMENT: &str = "indexes/state-forward.json";
+const REVERSE_STATE_DOCUMENT: &str = "indexes/state-reverse.json";
+const SEARCH_STATE_DOCUMENT: &str = "indexes/state-search.json";
+
+fn state_document(kind: KgIndexKind) -> &'static str {
+    match kind {
+        KgIndexKind::Forward => FORWARD_STATE_DOCUMENT,
+        KgIndexKind::Reverse => REVERSE_STATE_DOCUMENT,
+        KgIndexKind::Search => SEARCH_STATE_DOCUMENT,
+    }
+}
+
+fn load_index_state(
+    store: &FileDocumentStore,
+    kind: KgIndexKind,
+) -> Result<KgIndexState, IndexSynchronizationError> {
+    let id = DocumentId::new(state_document(kind))
+        .map_err(|error| IndexSynchronizationError::State(error.to_string()))?;
+    let Some(document) = store.get(&id).map_err(IndexSynchronizationError::Storage)? else {
+        return Ok(KgIndexState::uninitialized(kind));
+    };
+    let state: KgIndexState = serde_json::from_slice(document.as_bytes())
+        .map_err(|error| IndexSynchronizationError::State(error.to_string()))?;
+    if state.kind() != kind {
+        return Err(IndexSynchronizationError::State(format!(
+            "persisted index state kind does not match {}",
+            state_document(kind)
+        )));
+    }
+    Ok(state)
+}
+
+fn persist_index_state(store: &FileDocumentStore, state: &KgIndexState) -> Result<(), String> {
+    let id = DocumentId::new(state_document(state.kind())).map_err(|error| error.to_string())?;
+    let document = Document::new(serde_json::to_vec(state).map_err(|error| error.to_string())?);
+    if store.contains(&id).map_err(|error| error.to_string())? {
+        store
+            .replace(&id, document)
+            .map_err(|error| error.to_string())
+    } else {
+        store
+            .create(id, document)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -412,6 +562,7 @@ pub enum IndexSynchronizationError {
     Forward(ForwardIndexError),
     Reverse(ReverseIndexError),
     Search(SearchIndexError),
+    State(String),
 }
 
 impl core::fmt::Display for IndexSynchronizationError {
@@ -427,6 +578,7 @@ impl core::fmt::Display for IndexSynchronizationError {
                 write!(formatter, "reverse index initialization failed: {error}")
             }
             Self::Search(error) => write!(formatter, "search index initialization failed: {error}"),
+            Self::State(error) => write!(formatter, "index state initialization failed: {error}"),
         }
     }
 }
@@ -571,6 +723,18 @@ mod tests {
             synchronizer.search_state().policy(),
             IndexSynchronizationPolicy::Eventual
         );
+        let committed_version = commit.version().id().as_str().to_owned();
+        drop(synchronizer);
+        let reopened = KgIndexSynchronizer::open(&root).unwrap();
+        for state in [
+            reopened.forward_state(),
+            reopened.reverse_state(),
+            reopened.search_state(),
+        ] {
+            assert_eq!(state.queryability(), IndexQueryability::Queryable);
+            assert_eq!(state.version().generation(), 1);
+            assert_eq!(state.version().built_from_kg_version(), committed_version);
+        }
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -618,7 +782,83 @@ mod tests {
             *commit.version(),
         );
         assert_eq!(repository.current_state().unwrap().len(), 1);
+        let failed_version = report
+            .search()
+            .state()
+            .version()
+            .built_from_kg_version()
+            .to_owned();
+        drop(synchronizer);
+        let reopened = KgIndexSynchronizer::open(&root).unwrap();
+        assert_eq!(
+            reopened.search_state().queryability(),
+            IndexQueryability::Stale
+        );
+        assert_eq!(
+            reopened.search_state().version().built_from_kg_version(),
+            failed_version
+        );
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn incomplete_change_projections_are_not_reported_as_synchronized() {
+        use crate::identity::EntityId;
+        use crate::storage::{
+            Document, FileRepository, Repository, RepositoryIndexSynchronization, RepositoryRecord,
+        };
+        use nizaam_indexing::index::definition::TargetReferenceType;
+        use nizaam_indexing::index::reference::ObjectReference;
+
+        let root = root();
+        let mut repository = FileRepository::open(&root).unwrap();
+        let version = repository.current_version().unwrap();
+        let a = crate::versioning::ChangeTarget::Entity(EntityId::new("a").unwrap());
+        let b = crate::versioning::ChangeTarget::Entity(EntityId::new("b").unwrap());
+        let mut changes = crate::versioning::ChangeSet::new(Some(version.id().clone()));
+        changes.push(crate::versioning::Change::new(
+            crate::versioning::ChangeKind::Created,
+            a.clone(),
+        ));
+        changes.push(crate::versioning::Change::new(
+            crate::versioning::ChangeKind::Created,
+            b.clone(),
+        ));
+        let records = [
+            RepositoryRecord::new(a.clone(), Document::from_slice(b"a")),
+            RepositoryRecord::new(b.clone(), Document::from_slice(b"b")),
+        ];
+        let only_a = IndexSynchronizationChange::upsert(
+            a.clone(),
+            ObjectReference::new("kg", "a").unwrap(),
+            TargetReferenceType::new("entity").unwrap(),
+            Some("A"),
+        );
+        let mut synchronizer = KgIndexSynchronizer::open(&root).unwrap();
+        let (_, report) = repository
+            .commit_change_set_and_synchronize(&changes, &records, &[only_a], &mut synchronizer)
+            .unwrap();
+        assert!(!report.is_fully_synchronized());
+        assert!(
+            report
+                .forward()
+                .error()
+                .unwrap()
+                .contains("cover every committed")
+        );
+        assert_eq!(
+            repository.current_state().unwrap().len(),
+            2,
+            "canonical commit remains intact"
+        );
+        assert_eq!(
+            synchronizer
+                .forward_state()
+                .version()
+                .built_from_kg_version(),
+            "uninitialized"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

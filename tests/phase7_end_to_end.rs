@@ -1134,8 +1134,8 @@ fn phase7_index_failed_rebuild_does_not_change_canonical_state() {
 
     std::fs::remove_dir_all(root.join("indexes")).expect("index directory should exist");
     std::fs::create_dir(root.join("indexes")).unwrap();
-    std::fs::write(root.join("indexes/search.json"), b"{}").unwrap();
-    std::fs::create_dir(root.join("indexes/search-references.json")).unwrap();
+    std::fs::create_dir(root.join("indexes/search-index.json"))
+        .expect("search index path should be replaceable by a directory for failure injection");
     let result = index.rebuild([(object_reference("entity-2"), "new".to_owned())]);
 
     assert!(result.is_err());
@@ -1527,14 +1527,32 @@ fn phase7_negative_provider_unavailable_is_reported_without_kg_semantic_leakage(
 // 10 — phase7_performance
 // -----------------------------------------------------------------------------
 
+/// Emits a repeatable workload baseline without imposing fragile machine-specific
+/// wall-clock thresholds on the correctness test suite.
+fn report_performance_baseline(
+    metric: &str,
+    dataset_size: usize,
+    samples: usize,
+    elapsed: Duration,
+) {
+    let per_sample_micros = elapsed.as_secs_f64() * 1_000_000.0 / samples as f64;
+    eprintln!(
+        "phase7.performance metric={metric} dataset_items={dataset_size} samples={samples} total_us={} avg_us_per_sample={per_sample_micros:.2}",
+        elapsed.as_micros()
+    );
+}
+
 #[test]
 fn phase7_performance_read_latency_baseline() {
     let root = temp_root("perf-read");
     let (repository, _) = repository_with_record(&root, "entity-1", b"read");
+    let samples = 1_000usize;
+    let target = entity_target("entity-1");
     let start = Instant::now();
-    let _ = repository.read(&entity_target("entity-1")).unwrap();
-    let elapsed = start.elapsed();
-    assert!(elapsed <= Duration::MAX);
+    for _ in 0..samples {
+        assert!(repository.read(&target).unwrap().is_some());
+    }
+    report_performance_baseline("repository_read", 1, samples, start.elapsed());
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1542,25 +1560,29 @@ fn phase7_performance_read_latency_baseline() {
 fn phase7_performance_write_latency_baseline() {
     let root = temp_root("perf-write");
     let mut repository = FileRepository::open(&root).unwrap();
+    let samples = 8usize;
     let start = Instant::now();
-    let mut transaction = ChangeSetTransaction::begin(&mut repository).unwrap();
-    transaction
-        .stage(
-            created_change(entity_target("entity-1")),
-            Some(record("entity-1", b"write")),
-        )
-        .unwrap();
-    transaction.commit().unwrap();
-    let elapsed = start.elapsed();
-    assert!(elapsed <= Duration::MAX);
+    for index in 0..samples {
+        let id = format!("entity-{index}");
+        let mut transaction = ChangeSetTransaction::begin(&mut repository).unwrap();
+        transaction
+            .stage(
+                created_change(entity_target(&id)),
+                Some(record(&id, b"write")),
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+    }
+    report_performance_baseline("repository_write_commit", samples, samples, start.elapsed());
+    assert_eq!(repository.current_state().unwrap().len(), samples);
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
 fn phase7_performance_transaction_throughput_baseline() {
     let root = temp_root("perf-throughput");
-    let start = Instant::now();
     let mut repository = FileRepository::open(&root).unwrap();
+    let start = Instant::now();
     for index in 0..16 {
         let id = format!("entity-{index}");
         let mut transaction = ChangeSetTransaction::begin(&mut repository).unwrap();
@@ -1574,7 +1596,7 @@ fn phase7_performance_transaction_throughput_baseline() {
     }
     let elapsed = start.elapsed();
     assert_eq!(repository.current_state().unwrap().len(), 16);
-    assert!(elapsed <= Duration::MAX);
+    report_performance_baseline("transaction_throughput", 16, 16, elapsed);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1582,11 +1604,15 @@ fn phase7_performance_transaction_throughput_baseline() {
 fn phase7_performance_snapshot_cost_baseline() {
     let root = temp_root("perf-snapshot");
     let (repository, _) = repository_with_record(&root, "entity-1", b"snapshot");
+    let samples = 100usize;
     let start = Instant::now();
-    let snapshot = repository.snapshot().unwrap();
+    let mut record_count = 0;
+    for _ in 0..samples {
+        record_count = repository.snapshot().unwrap().len();
+    }
     let elapsed = start.elapsed();
-    assert_eq!(snapshot.len(), 1);
-    assert!(elapsed <= Duration::MAX);
+    assert_eq!(record_count, 1);
+    report_performance_baseline("snapshot_creation", 1, samples, elapsed);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1610,11 +1636,18 @@ fn phase7_performance_recovery_cost_baseline() {
     journal.prepare(&commit).unwrap();
     journal.commit(commit.change_set().id()).unwrap();
 
+    let samples = 100usize;
     let start = Instant::now();
-    let recovered = kg::storage::recover_from_snapshot(&snapshot, &journal).unwrap();
+    let mut recovered_count = 0;
+    for _ in 0..samples {
+        recovered_count = kg::storage::recover_from_snapshot(&snapshot, &journal)
+            .unwrap()
+            .records()
+            .len();
+    }
     let elapsed = start.elapsed();
-    assert_eq!(recovered.records().len(), 1);
-    assert!(elapsed <= Duration::MAX);
+    assert_eq!(recovered_count, 1);
+    report_performance_baseline("snapshot_plus_journal_recovery", 1, samples, elapsed);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1624,10 +1657,14 @@ fn phase7_performance_index_rebuild_cost_baseline() {
     let mut index = FileForwardIndex::open(&root).unwrap();
     let entries =
         (0..32).map(|index| (object_reference(&format!("entity-{index}")), target_type()));
+    let samples = 5usize;
+    let entries = entries.collect::<Vec<_>>();
     let start = Instant::now();
-    index.rebuild(entries).unwrap();
+    for _ in 0..samples {
+        index.rebuild(entries.clone()).unwrap();
+    }
     let elapsed = start.elapsed();
-    assert!(elapsed <= Duration::MAX);
+    report_performance_baseline("forward_index_rebuild", 32, samples, elapsed);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1643,11 +1680,13 @@ fn phase7_performance_search_latency_baseline() {
             )
             .unwrap();
     }
+    let samples = 1_000usize;
     let start = Instant::now();
-    let hits = index.search("quran knowledge").unwrap();
+    for _ in 0..samples {
+        assert_eq!(index.search("quran knowledge").unwrap().len(), 32);
+    }
     let elapsed = start.elapsed();
-    assert_eq!(hits.len(), 32);
-    assert!(elapsed <= Duration::MAX);
+    report_performance_baseline("lexical_search", 32, samples, elapsed);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1659,5 +1698,14 @@ fn phase7_performance_storage_size_baseline() {
     let size = std::fs::metadata(state_path).unwrap().len();
     assert!(size > 0);
     assert_eq!(repository.current_state().unwrap().len(), 1);
+    let records = repository.current_state().unwrap().len();
+    let bytes_per_record = if records == 0 {
+        0
+    } else {
+        size / records as u64
+    };
+    eprintln!(
+        "phase7.performance metric=canonical_state_storage_size dataset_records={records} serialized_bytes={size} bytes_per_record={bytes_per_record}"
+    );
     let _ = std::fs::remove_dir_all(root);
 }

@@ -69,23 +69,45 @@ impl FileReverseIndex {
         assigned_id: IndexAssignedId,
         object_reference: ObjectReference,
     ) -> Result<(), ReverseIndexError> {
-        self.entries.insert(
+        let _lock = self
+            .store
+            .acquire_exclusive_lock()
+            .map_err(ReverseIndexError::Storage)?;
+        let mut next = load_entries(&self.store)?;
+        next.insert(
             assigned_id.to_string(),
             StoredReference {
                 source: object_reference.source().to_owned(),
                 object_reference: object_reference.object_reference().to_owned(),
             },
         );
-        self.persist()
+        if let Err(error) = self.persist(&next) {
+            let _ = self.reload_from_disk();
+            return Err(error);
+        }
+        self.entries = next;
+        Ok(())
     }
 
     /// Removes a reverse mapping if present.
     pub fn remove(&mut self, assigned_id: &IndexAssignedId) -> Result<bool, ReverseIndexError> {
-        let removed = self.entries.remove(&assigned_id.to_string()).is_some();
-        if removed {
-            self.persist()?;
+        let _lock = self
+            .store
+            .acquire_exclusive_lock()
+            .map_err(ReverseIndexError::Storage)?;
+        let key = assigned_id.to_string();
+        let mut next = load_entries(&self.store)?;
+        if !next.contains_key(&key) {
+            self.entries = next;
+            return Ok(false);
         }
-        Ok(removed)
+        next.remove(&key);
+        if let Err(error) = self.persist(&next) {
+            let _ = self.reload_from_disk();
+            return Err(error);
+        }
+        self.entries = next;
+        Ok(true)
     }
 
     /// Applies one explicit canonical-to-reverse index synchronization change.
@@ -93,15 +115,54 @@ impl FileReverseIndex {
         &mut self,
         change: &IndexSynchronizationChange,
     ) -> Result<(), ReverseIndexError> {
-        let assigned_id = IndexAssignedId::generate(change.target_type(), change.reference());
-        match change.action() {
-            IndexChangeAction::Upsert => {
-                self.insert(assigned_id, change.reference().clone())?;
-            }
-            IndexChangeAction::Remove => {
-                self.remove(&assigned_id)?;
+        self.synchronize_batch(std::slice::from_ref(change))
+    }
+
+    /// Applies a collection of changes and persists the resulting map once.
+    pub fn synchronize_batch(
+        &mut self,
+        changes: &[IndexSynchronizationChange],
+    ) -> Result<(), ReverseIndexError> {
+        let _lock = self
+            .store
+            .acquire_exclusive_lock()
+            .map_err(ReverseIndexError::Storage)?;
+        self.synchronize_batch_locked(changes)
+    }
+
+    pub(crate) fn synchronize_batch_locked(
+        &mut self,
+        changes: &[IndexSynchronizationChange],
+    ) -> Result<(), ReverseIndexError> {
+        let mut next = load_entries(&self.store)?;
+        for change in changes {
+            let assigned_id =
+                IndexAssignedId::generate(change.target_type(), change.reference()).to_string();
+            match change.action() {
+                IndexChangeAction::Upsert => {
+                    next.insert(
+                        assigned_id,
+                        StoredReference {
+                            source: change.reference().source().to_owned(),
+                            object_reference: change.reference().object_reference().to_owned(),
+                        },
+                    );
+                }
+                IndexChangeAction::Remove => {
+                    next.remove(&assigned_id);
+                }
             }
         }
+        if let Err(error) = self.persist(&next) {
+            let _ = self.reload_from_disk();
+            return Err(error);
+        }
+        self.entries = next;
+        Ok(())
+    }
+
+    pub(crate) fn reload_from_disk(&mut self) -> Result<(), ReverseIndexError> {
+        self.entries = load_entries(&self.store)?;
         Ok(())
     }
 
@@ -110,7 +171,11 @@ impl FileReverseIndex {
     where
         I: IntoIterator<Item = (IndexAssignedId, ObjectReference)>,
     {
-        self.entries = entries
+        let _lock = self
+            .store
+            .acquire_exclusive_lock()
+            .map_err(ReverseIndexError::Storage)?;
+        let next = entries
             .into_iter()
             .map(|(assigned_id, reference)| {
                 (
@@ -122,11 +187,16 @@ impl FileReverseIndex {
                 )
             })
             .collect();
-        self.persist()
+        self.persist(&next)?;
+        self.entries = next;
+        Ok(())
     }
 
-    fn persist(&mut self) -> Result<(), ReverseIndexError> {
-        let bytes = serde_json::to_vec(&self.entries)
+    fn persist(
+        &self,
+        entries: &BTreeMap<String, StoredReference>,
+    ) -> Result<(), ReverseIndexError> {
+        let bytes = serde_json::to_vec(entries)
             .map_err(|error| ReverseIndexError::Serialization(error.to_string()))?;
         let id =
             DocumentId::new(REVERSE_DOCUMENT).map_err(|_| ReverseIndexError::InvalidDocumentId)?;
@@ -224,6 +294,51 @@ mod tests {
     }
 
     #[test]
+    fn synchronization_updates_and_removes_one_reverse_entry() {
+        let root = root();
+        let reference = ObjectReference::new("kg", "entity-1").unwrap();
+        let target_type = TargetReferenceType::new("entity").unwrap();
+        let target = crate::versioning::ChangeTarget::Entity(
+            crate::identity::EntityId::new("entity-1").unwrap(),
+        );
+        let assigned_id = IndexAssignedId::generate(&target_type, &reference);
+        let mut index = FileReverseIndex::open(&root).unwrap();
+        let upsert = IndexSynchronizationChange::upsert(
+            target.clone(),
+            reference.clone(),
+            target_type.clone(),
+            Some("entity"),
+        );
+        index.synchronize(&upsert).unwrap();
+        assert_eq!(
+            index.lookup_reverse(&assigned_id).unwrap(),
+            Some(reference.clone())
+        );
+        let remove = IndexSynchronizationChange::remove(target, reference.clone(), target_type);
+        index.synchronize(&remove).unwrap();
+        assert!(index.lookup_reverse(&assigned_id).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn separate_open_handles_preserve_each_others_updates() {
+        let root = root();
+        let a = ObjectReference::new("kg", "a").unwrap();
+        let b = ObjectReference::new("kg", "b").unwrap();
+        let target_type = TargetReferenceType::new("entity").unwrap();
+        let assigned_a = IndexAssignedId::generate(&target_type, &a);
+        let assigned_b = IndexAssignedId::generate(&target_type, &b);
+        let mut first = FileReverseIndex::open(&root).unwrap();
+        let mut second = FileReverseIndex::open(&root).unwrap();
+        first.insert(assigned_a.clone(), a.clone()).unwrap();
+        second.insert(assigned_b.clone(), b.clone()).unwrap();
+        let reopened = FileReverseIndex::open(&root).unwrap();
+        assert_eq!(reopened.lookup_reverse(&assigned_a).unwrap(), Some(a));
+        assert_eq!(reopened.lookup_reverse(&assigned_b).unwrap(), Some(b));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn physical_reverse_lookup_survives_reopen() {
         let root = root();
         let reference = ObjectReference::new("kg", "entity-1").unwrap();
@@ -238,35 +353,6 @@ mod tests {
 
         let index = FileReverseIndex::open(&root).unwrap();
         assert_eq!(index.lookup_reverse(&assigned_id).unwrap(), Some(reference));
-        let _ = std::fs::remove_dir_all(root);
-    }
-    #[test]
-    fn synchronization_updates_and_removes_one_reverse_entry() {
-        let root = root();
-        let reference = ObjectReference::new("kg", "entity-1").unwrap();
-        let target_type = TargetReferenceType::new("entity").unwrap();
-        let target = crate::versioning::ChangeTarget::Entity(
-            crate::identity::EntityId::new("entity-1").unwrap(),
-        );
-        let assigned_id = IndexAssignedId::generate(&target_type, &reference);
-        let mut index = FileReverseIndex::open(&root).unwrap();
-
-        let upsert = IndexSynchronizationChange::upsert(
-            target.clone(),
-            reference.clone(),
-            target_type.clone(),
-            Some("entity"),
-        );
-        index.synchronize(&upsert).unwrap();
-        assert_eq!(
-            index.lookup_reverse(&assigned_id).unwrap(),
-            Some(reference.clone())
-        );
-
-        let remove = IndexSynchronizationChange::remove(target, reference, target_type);
-        index.synchronize(&remove).unwrap();
-        assert!(index.lookup_reverse(&assigned_id).unwrap().is_none());
-
         let _ = std::fs::remove_dir_all(root);
     }
 }

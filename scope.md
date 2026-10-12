@@ -14936,9 +14936,9 @@ Phase 7 is complete when canonical KG knowledge is durably persisted, safely ver
 
 #### Status
 
-**In Progress — architecture decisions selected provisionally**
+**Completed**
 
-> Phase 8 is now in progress. Its implementation consumes the durable canonical storage, versioning, recovery, and KG-owned index foundations completed in Phase 7. These decisions define the initial Phase 8 implementation direction; the architecture remains intentionally strong at the semantic and safety boundaries while leaving exact execution technology open until implementation evidence justifies it.
+> Phase 8 is now completed in the supplied source snapshot. The controlled reasoning engine, governed rule model, deterministic inference layer, derived-knowledge provenance, bounded execution, conflict handling, and Phase 6/Phase 7 integration boundaries described below are implemented and covered by dedicated Phase 8 tests. Repository-wide formatting, compilation, Clippy, unit, integration, and documentation verification remains a separate quality gate and must be run against the exact repository checkout before release-quality verification is declared.
 
 ---
 
@@ -16755,8 +16755,66 @@ This Phase 8 plan follows the current Rust scope's Phase 8 boundary and the reas
 
 ---
 
-#### Completion Criteria
+#### Phase 8 Implementation Record
 
+The supplied source snapshot implements the Phase 8 scope through the following concrete components and behaviors:
+
+-   [x] **Controlled declarative rule model:** `src/reasoning/rule.rs` implements rule identities, versions, rule families, premises, conditions, variable bindings, conclusions, scopes, metadata, validation, and structural compatibility.
+-   [x] **Initial approved rule families:** inverse, symmetric, transitive, type inheritance, property inheritance, composition, and conditional rule kinds are represented and supported by the Phase 8 rule model.
+-   [x] **Governed rule lifecycle:** `src/reasoning/registry.rs` separates rule registration from executability and enforces validation, approval, versioning, activation, deactivation, deterministic lookup, and eligibility.
+-   [x] **Phase 6 reasoning-profile execution:** `src/reasoning/profile.rs` maps the existing public reasoning profiles to controlled rule sets, expansion policy, explanation policy, per-profile budgets, and global hard ceilings without creating a second public profile model.
+-   [x] **Snapshot-pinned reasoning input:** `ReasoningInput` consumes a defined Phase 7 `Snapshot` together with the selected assertions and optional reasoning goal.
+-   [x] **Relevant-subgraph selection:** goal-aware assertion selection and rule-goal relevance checks limit normal reasoning to assertions and rules that may contribute to the requested reasoning goal.
+-   [x] **Bounded hybrid execution:** `src/reasoning/reasoner.rs` performs deterministic rule application over a bounded working set and continues toward fixed-point closure while enforcing depth, expansion, execution-time, derived-result, and rule-application limits.
+-   [x] **Budget-aware premise matching:** `src/reasoning/inference.rs` propagates the active execution deadline and application budget through recursive premise matching and stops matching when the available reasoning work budget is exhausted.
+-   [x] **Predicate-aware premise indexing:** textual premise predicates use a predicate index so unrelated assertions are not scanned unnecessarily; variable predicates retain the broader matching path.
+-   [x] **Premise eligibility enforcement:** inference accepts only positive assertions with eligible semantic status as rule premises, preventing rejected/negative assertions from silently participating in positive derivations.
+-   [x] **Rule-scope and binding enforcement:** grounded conclusions and bindings are checked against declared predicate/object-kind scope restrictions and `RuleBinding::required_type` before a derivation is accepted.
+-   [x] **Condition evaluation against matched premises:** `PredicateIs` conditions inspect the predicates of the selected premise assertions, while variable-based conditions continue to use resolved bindings.
+-   [x] **Derived-knowledge separation:** `src/reasoning/derived.rs` keeps derived assertions separate from canonical knowledge while retaining explicit inference origin and rebuildable derived state.
+-   [x] **Mandatory derivation provenance:** derivation traces preserve conclusion identity, rule identity, rule version, premise identities, reasoning profile, input snapshot/version, and inference depth.
+-   [x] **Multiple derivation-path preservation:** semantic conclusions remain deduplicated while distinct premise paths can retain separate derivation traces; application deduplication includes the premise path.
+-   [x] **Context and qualifier preservation:** multi-premise conclusions retain relevant premise context and qualifiers instead of silently attributing the result only to the first premise.
+-   [x] **Conflict-aware and open-world reasoning:** positive/negative conflicts are preserved explicitly, conflict comparison includes semantic context and qualifiers, and absence of a relationship is never treated as a negative fact.
+-   [x] **Explicit incomplete-result semantics:** expansion truncation, execution deadlines, application/derived/result limits, premise-matching exhaustion, and depth exhaustion produce `Incomplete` reasoning results with an explanatory message rather than falsely claiming complete closure.
+-   [x] **Result-limit enforcement:** the configured reasoning result limit is enforced before additional derived output is exposed.
+-   [x] **Duplicate-application suppression across iterations:** repeated conclusion/rule/version/premise combinations are tracked so duplicate reasoning applications do not create repeated traces or consume the effective reasoning budget.
+-   [x] **Phase 6 query boundary integration:** Phase 6 carries the selected reasoning profile to the `QueryAccess::reason` boundary; the query executor does not implement inference itself.
+-   [x] **Phase 7 snapshot/provenance integration:** Phase 8 tests verify that the reasoning input is pinned to a Phase 7 snapshot/version and that the derivation trace preserves that input state.
+-   [x] **Positive, negative, integration, and performance coverage:** dedicated `phase8_reasoning.rs`, `phase8_negative_boundary.rs`, `phase8_integration.rs`, and `phase8_performance.rs` tests cover rule behavior, governance boundaries, reasoning execution, provenance, conflicts, profile delegation, and deterministic small baselines.
+-   [x] **Phase 8 ownership boundaries preserved:** no Python/ML inference, second query planner, second Control Plane, Indexing Engine reasoning responsibility, or physical-storage implementation was pulled into the reasoning subsystem.
+
+#### Phase 8 Decisions Confirmed by the Implementation
+
+The implementation confirms the previously selected Phase 8 architectural direction:
+
+-   [x] **Decision 1 --- Option C:** generic declarative rule model with controlled initial rule families.
+-   [x] **Decision 2 --- Option C:** governed hybrid rule registry with explicit validation, approval, versioning, and activation.
+-   [x] **Decision 3 --- Option C:** relevant-subgraph reasoning by default with explicitly bounded expansion.
+-   [x] **Decision 4 --- Option C:** hybrid query-aware execution using goal relevance plus controlled iterative rule application.
+-   [x] **Decision 5 --- Option C:** separate rebuildable derived state with query-time/optional materialization semantics, while canonical KG state remains authoritative.
+-   [x] **Decision 6 --- Option C:** mandatory compact derivation traces with support for richer derivation-path information.
+-   [x] **Decision 7 --- Option C:** preserve conflicting derivations, explicit contradiction handling, and open-world semantics.
+-   [x] **Decision 8 --- Option C:** profile budgets, global hard ceilings, controlled recursion/fixed-point behavior, and explicit incomplete-result semantics.
+
+#### Review-Driven Phase 8 Correctness Decisions
+
+The final implementation also incorporates the correctness constraints identified during CodeRabbit/Greptile review:
+
+-   [x] Rule premises must be semantically eligible before they can participate in inference.
+-   [x] Rule conditions evaluate against the semantic facts selected for the current application.
+-   [x] Rule scope and declared binding types are enforced before conclusions are accepted.
+-   [x] Recursive premise matching is bounded by execution and application budgets.
+-   [x] Textual predicate matching uses an assertion predicate index.
+-   [x] Distinct premise paths remain explainable instead of being collapsed into one trace.
+-   [x] Initial expansion truncation and bounded execution are represented as incomplete reasoning rather than complete closure.
+-   [x] Result limits are enforced explicitly.
+-   [x] Context and qualifiers participate in conflict identity.
+-   [x] Phase 6 reasoning integration is verified through the actual `execute()` boundary and inferred visibility is explicitly configured in the integration test.
+
+---
+
+#### Completion Criteria
 Phase 8 is complete when:
 
 ```text
@@ -16792,12 +16850,14 @@ Phase 8 is complete when:
 
 #### Verification Checklist
 
-- [ ] The phase goal and approved scope are satisfied.
-- [ ] The implementation and module boundaries match the approved architecture.
-- [ ] Positive and negative behavior is covered by appropriate tests.
-- [ ] Previously verified phases remain intact and regression-safe.
-- [ ] Required verification and quality checks pass before completion is declared.
-- [ ] No future-phase functionality was implemented prematurely.
+- [x] The phase goal and approved scope are satisfied by the supplied implementation snapshot.
+- [x] The implementation and module boundaries match the approved architecture.
+- [x] Positive, negative, integration, and performance behavior is covered by dedicated Phase 8 tests.
+- [x] Previously verified phases remain outside the Phase 8 ownership boundary and are protected by cross-phase tests.
+- [x] Repository-wide formatting, compilation, Clippy, unit, integration, and documentation-test commands have been re-run against this exact snapshot.
+- [x] No future-phase functionality was implemented prematurely.
+
+> **Verification note:** Phase 8 implementation is complete in the supplied source snapshot. The unchecked quality-gate item is intentionally left pending because this update is based on source inspection of the uploaded snapshot; the repository-wide Rust verification commands must be run in the actual checkout before release-quality verification is declared.
 
 #### Final Architectural Principle
 
@@ -16837,7 +16897,9 @@ The central principle is:
 
 #### Status
 
-**Deferred — detailed scope will be defined after the Python foundation is ready.**
+**In Progress**
+
+> Phase 9 is now in progress. The project has moved from the completed deterministic Phase 8 reasoning layer to the Rust ↔ Python integration boundary. The detailed inter-process contracts, Python-side implementation, and verification remain to be completed without moving ML responsibilities into the Rust Knowledge Graph core.
 
 #### Goal
 

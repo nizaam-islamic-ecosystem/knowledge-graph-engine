@@ -12434,9 +12434,9 @@ Phase 6 is complete when applications can perform useful lookup, bounded travers
 
 #### Status
 
-**In Progress**
+**Completed**
 
-> Phase 7 is now in progress. Its physical storage, versioning, persistence, recovery, and performance work starts from the storage-independent query/access boundary completed in Phase 6.
+> Phase 7 is now completed. Its physical storage, versioning, persistence, recovery, and performance foundations were implemented from the storage-independent query/access boundary completed in Phase 6.
 > These decisions define the initial Phase 7 implementation direction. They are intentionally evolutionary. The initial implementation should establish a correct semantic/storage boundary and a workable first physical architecture without freezing the KG to assumptions that have not yet been validated by real workloads.
 
 ---
@@ -14604,6 +14604,252 @@ The phase boundary is therefore:
 
 ------------------------------------------------------------------------
 
+#### Phase 7 Implementation Record
+
+The uploaded Phase 7 repository snapshot was extracted and compared against the
+approved Phase 7 architecture, implementation sequence, completion criteria,
+and test strategy. The following items are implemented in the actual source
+tree. Checkmarks record functionality found in the source and test assets;
+the attached test log additionally confirms the Phase 7 end-to-end test target
+and the complete unit-test suite passed.
+
+##### Implemented storage architecture
+
+- [x] Provider-neutral `DocumentStore` abstraction is implemented.
+- [x] File-backed document provider is implemented through `FileDocumentStore`.
+- [x] The default operational storage root resolves to the user's home
+      `.nizaam` directory through the platform-aware `dirs` home-directory
+      mechanism.
+- [x] Document identifiers are validated so physical paths cannot escape the
+      provider root.
+- [x] Atomic document writes use temporary-file creation, synchronization,
+      and rename semantics.
+- [x] Create-only and replace semantics are explicitly separated.
+- [x] Persistent advisory locking protects concurrent canonical storage
+      operations without treating the lock file itself as semantic state.
+- [x] Storage failures are represented through an explicit
+      `DocumentStoreError` boundary rather than leaking raw provider details
+      into the semantic model.
+
+##### Implemented semantic repository and canonical state
+
+- [x] `FileRepository` implements the semantic repository boundary over the
+      document-store abstraction.
+- [x] Canonical current KG state is persisted separately from physical
+      provider mechanics.
+- [x] Repository records preserve typed semantic `ChangeTarget` identity
+      together with opaque persisted documents.
+- [x] Canonical commits validate non-empty Change Sets and their base KG
+      version before publication.
+- [x] Successful commits create a new logical `KgVersion` and persist the
+      resulting canonical state.
+- [x] Failed commits preserve the previous canonical state.
+- [x] Concurrent first-open initialization is serialized against canonical
+      commits and transient lock contention is handled safely.
+- [x] The public repository boundary does not require callers to depend on
+      the concrete file provider.
+
+##### Implemented Change Set transactions
+
+- [x] `ChangeSetTransaction` provides the selected initial Change Set
+      transaction model.
+- [x] Transactions capture their base KG version and stage semantic changes
+      before commit.
+- [x] Transaction state is explicit (`Open`, `Committed`, `RolledBack`).
+- [x] Commit validates the base version and delegates one atomic canonical
+      repository commit.
+- [x] Invalid/closed/conflicting transactions are rejected without exposing
+      partial semantic state.
+- [x] Transaction-to-index synchronization is exposed as a separate boundary
+      after canonical publication.
+
+##### Implemented snapshots and KG versioning
+
+- [x] Immutable `Snapshot` objects provide coherent read views pinned to a
+      committed KG version.
+- [x] Snapshots have their own Core-backed identity and remain distinct from
+      the KG version itself.
+- [x] Snapshot reads remain stable while later repository writes occur.
+- [x] `KgVersion` models committed logical KG state with generated version
+      identity, sequence, parent, and originating Change Set metadata.
+- [x] Current version selection and historical version relationships are
+      preserved.
+- [x] KG versioning remains explicitly distinct from temporal validity, source
+      version, model version, and storage schema version.
+
+##### Implemented historical change tracking and semantic lifecycle
+
+- [x] `ChangeSet`, `Change`, `ChangeKind`, and `ChangeTarget` provide explicit
+      semantic historical change tracking.
+- [x] Change kinds include creation, update, retraction, supersession,
+      linking/unlinking, and metadata changes.
+- [x] Retraction is represented as semantic change state rather than being
+      equated with physical deletion.
+- [x] Supersession is represented as semantic history rather than silently
+      deleting the previous semantic state.
+- [x] Change history is associated with committed KG versions.
+
+##### Implemented durable recovery
+
+- [x] `FileRecoveryJournal` provides a durable JSONL recovery journal.
+- [x] Recovery distinguishes physical journal records from semantic Change
+      Sets and canonical repository state.
+- [x] Prepared/incomplete transactions are not promoted to canonical state
+      without a durable commit marker.
+- [x] Recovery can reconstruct canonical state from a valid snapshot plus
+      subsequent committed journal records.
+- [x] Recovery validates base-version and sequence relationships.
+- [x] Corrupt or contradictory completed journal records are reported
+      explicitly.
+- [x] An incomplete final journal tail can be ignored/repaired without
+      discarding valid prior records.
+- [x] Journal append preserves existing journal contents and does not truncate
+      previously committed recovery history.
+- [x] Repository restart recovery is covered by the Phase 7 end-to-end tests.
+
+##### Implemented migration and compatibility architecture
+
+- [x] Physical storage schema versions are modeled separately from KG
+      semantic versions.
+- [x] `MigrationPlan`, `MigrationStep`, and `MigrationRunner` implement an
+      explicit prepare/apply/verify/activate migration lifecycle.
+- [x] Migration paths must be valid and contiguous before execution.
+- [x] Verification is required before schema activation.
+- [x] Interrupted or failed migrations are prevented from being reported as
+      activated.
+- [x] Compatibility is evaluated independently across API, semantic model,
+      storage schema, storage provider, index, and version dimensions.
+- [x] Semantic incompatibility cannot be hidden merely because a physical
+      schema migration is possible.
+
+##### Implemented KG-owned physical indexes
+
+- [x] KG-owned forward, reverse, and search indexes are implemented under
+      `src/index/`.
+- [x] The forward index provides physical relationship/object-reference
+      lookup without replacing KG semantic identity.
+- [x] The reverse index maps Indexing-native assigned identities back to
+      source-owned object references.
+- [x] The KG search index provides deterministic lexical/text retrieval while
+      remaining separate from canonical KG state.
+- [x] Derived index state tracks KG-version lineage, queryability, and
+      synchronization status.
+- [x] KG index version identity remains distinct from KG version and
+      Indexing-native version identity.
+- [x] Forward, reverse, and search index persistence survives reopen.
+- [x] Derived indexes are rebuildable from canonical inputs.
+- [x] Index rebuild failure does not modify canonical KG state.
+- [x] KG index synchronization is explicitly separated from canonical commit.
+- [x] Forward/reverse synchronization uses the stronger synchronization
+      behavior while the search index is explicitly configured for eventual
+      synchronization.
+- [x] Eventual search-index failure is represented through explicit stale
+      derived-index state rather than rolling back canonical knowledge.
+- [x] KG search remains KG-owned and does not delegate semantic search
+      ownership to the Nizaam Indexing Engine.
+
+##### Implemented Phase 6 → Phase 7 integration
+
+- [x] The existing Phase 6 semantic query boundary remains intact while
+      Phase 7 supplies durable repository and derived-index backing.
+- [x] An end-to-end path connects canonical repository state, Change Set
+      transaction, KG versioning, KG-owned indexes, and Phase 6 query access.
+- [x] Provider-specific storage types do not become part of the public KG
+      semantic/query contract.
+- [x] Core-owned runtime, Control Plane, transport, security, and universal
+      infrastructure remain outside KG storage ownership.
+
+##### Implemented negative and failure-boundary coverage
+
+- [x] Invalid transaction state protects canonical state.
+- [x] Version conflicts protect canonical state.
+- [x] Corrupt persisted records are reported without promoting partial state.
+- [x] Journal-write failures are explicit.
+- [x] Commit failures do not change canonical state.
+- [x] Migration failures do not activate the new schema.
+- [x] Recovery version inconsistencies are reported.
+- [x] Index publication failures do not undo a successful canonical commit.
+- [x] Search-index failures can leave the eventual derived index stale without
+      rolling back canonical state.
+- [x] Provider-unavailable behavior remains behind the storage abstraction.
+
+##### Implemented performance baseline coverage
+
+- [x] Read latency baseline is measured.
+- [x] Write latency baseline is measured.
+- [x] Transaction throughput baseline is measured.
+- [x] Snapshot creation/read cost baseline is measured.
+- [x] Recovery cost baseline is measured.
+- [x] Index rebuild cost baseline is measured.
+- [x] Search latency baseline is measured.
+- [x] Storage-size baseline is measured.
+- [x] The baseline suite establishes correctness/workload measurements for
+      future optimization rather than claiming final scalability.
+
+##### Phase 7 implementation decisions confirmed
+
+The implementation resolves the initial Phase 7 decisions as follows:
+
+- [x] **Physical storage — Option E:** file-backed document-oriented canonical
+      storage is the initial physical provider, with the semantic repository
+      remaining provider-neutral and a future migration path toward hybrid
+      storage.
+- [x] **Repository boundary — Option B:** semantic repository operations are
+      exposed instead of raw filesystem/database operations.
+- [x] **Initial physical aggregate layout:** the first provider uses a single
+      canonical current-state document together with separate recovery-journal,
+      snapshot/version metadata, and derived-index documents. This keeps the
+      first implementation simple while preserving the semantic repository
+      boundary and the later path toward richer physical aggregation.
+- [x] **Transaction model — Option B:** Change Set transactions are the
+      initial commit boundary.
+- [x] **Consistency — Option B:** coherent snapshot-style reads and controlled
+      concurrent writes are implemented; stronger/configurable isolation is
+      left for future workload evidence.
+- [x] **Snapshots/versioning — Option C:** current canonical state, logical KG
+      versions, immutable snapshots, and historical Change Set information are
+      represented together without conflating their meanings.
+- [x] **Retraction — Option B:** semantic retraction/supersession is represented
+      explicitly and is not treated as physical deletion.
+- [x] **Derived-index synchronization — Option C:** canonical commit is
+      separated from derived-index publication, with stronger synchronization
+      for critical forward/reverse structures and eventual synchronization for
+      search.
+- [x] **Stale-index behavior — Option B:** stale derived state is explicit
+      through index queryability/version metadata.
+- [x] **KG index ownership — Option C:** KG owns its forward, reverse, and
+      search structures; Nizaam Indexing remains the owner of its native
+      identities and infrastructure.
+- [x] **Migration — Option B:** explicit versioned migration orchestration and
+      compatibility checks are implemented, while larger compatibility layers
+      remain available for future evolution.
+- [x] **Durability/recovery — Option B:** durable journal-based recovery plus
+      snapshots is implemented; full backup/restore and disaster recovery
+      remain future infrastructure.
+- [x] **Performance — Option A:** correctness and durability were prioritized,
+      with measured baselines rather than premature caching, sharding, or
+      replication.
+
+##### Verification evidence
+
+- [x] The uploaded source archive contains the complete Phase 7 storage,
+      versioning, and index modules and the merged
+      `tests/phase7_end_to_end.rs` target.
+- [x] The Phase 7 end-to-end target contains 65 tests covering storage,
+      transactions, versioning, snapshots, recovery, migration, indexes,
+      integration, negative boundaries, and performance baselines.
+- [x] The attached test log reports **65 passed, 0 failed** for
+      `tests/phase7_end_to_end.rs`.
+- [x] The attached test log reports **601 passed, 0 failed** for the crate's
+      unit-test suite.
+- [x] The attached test log also shows the Phase 7 contracts exposed through
+      the public conformance boundary and existing earlier-phase suites
+      remaining green.
+- [x] No Phase 8 reasoning implementation is present in the Phase 7 source
+      modules; controlled reasoning remains the next phase.
+
+---
+
 #### Completion Criteria
 
 Phase 7 is complete when the KG can:
@@ -14633,12 +14879,12 @@ Phase 7 is complete when the KG can:
 
 #### Verification Checklist
 
-- [ ] The phase goal and approved scope are satisfied.
-- [ ] The implementation and module boundaries match the approved architecture.
-- [ ] Positive and negative behavior is covered by appropriate tests.
-- [ ] Previously verified phases remain intact and regression-safe.
-- [ ] Required verification and quality checks pass before completion is declared.
-- [ ] No future-phase functionality was implemented prematurely.
+- [x] The phase goal and approved scope are satisfied.
+- [x] The implementation and module boundaries match the approved architecture.
+- [x] Positive and negative behavior is covered by appropriate tests.
+- [x] Previously verified phases remain intact and regression-safe.
+- [x] Required verification and quality checks pass according to the attached test log.
+- [x] No future-phase functionality was implemented prematurely.
 
 #### Final Architectural Principle
 
@@ -14690,9 +14936,9 @@ Phase 7 is complete when canonical KG knowledge is durably persisted, safely ver
 
 #### Status
 
-**Planned — architecture decisions selected provisionally**
+**In Progress — architecture decisions selected provisionally**
 
-> These decisions define the initial Phase 8 implementation direction. The architecture is intentionally strong at the semantic and safety boundaries while leaving the exact execution technology open until implementation evidence justifies it.
+> Phase 8 is now in progress. Its implementation consumes the durable canonical storage, versioning, recovery, and KG-owned index foundations completed in Phase 7. These decisions define the initial Phase 8 implementation direction; the architecture remains intentionally strong at the semantic and safety boundaries while leaving exact execution technology open until implementation evidence justifies it.
 
 ---
 

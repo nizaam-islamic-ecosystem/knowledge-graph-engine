@@ -220,8 +220,9 @@ fn shutdown_reaches_core_stopped_state() {
 fn phase0_contains_no_graph_or_domain_execution_requirement() {
     // The executable assertion is intentionally architectural: the only
     // Phase 0 capability exercised by this suite is the opaque probe. No graph,
-    // search, traversal, storage, ingestion, ontology, or reasoning API is
-    // required to construct or serve the engine.
+    // search, traversal, storage, ingestion, or ontology API is required to
+    // construct or serve the engine. Phase 8 reasoning has its own typed public
+    // boundary test below and is not exercised through the Core capability probe.
     let (engine, _, capability_id) = serving_engine("no-domain-functionality");
 
     let request = universal_request(
@@ -767,4 +768,24 @@ fn phase7_storage_versioning_and_index_contracts_are_public_at_the_crate_boundar
             Report = nizaam_knowledge_graph::IndexSynchronizationReport,
         >,
     > = None;
+}
+
+#[test]
+fn phase8_public_reasoning_boundary_exposes_typed_profiles_and_rule_identity() {
+    use nizaam_knowledge_graph::identity::RuleId;
+    use nizaam_knowledge_graph::query::ReasoningProfile;
+    use nizaam_knowledge_graph::reasoning::ReasoningResult;
+
+    let rule_id = RuleId::generate();
+    assert!(!rule_id.as_str().is_empty());
+
+    let profiles = [
+        ReasoningProfile::None,
+        ReasoningProfile::Basic,
+        ReasoningProfile::Semantic,
+        ReasoningProfile::Deep,
+    ];
+    assert_eq!(profiles.len(), 4);
+
+    let _: Option<ReasoningResult> = None;
 }

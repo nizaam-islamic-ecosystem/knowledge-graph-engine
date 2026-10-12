@@ -49,6 +49,21 @@ pub trait QueryAccess {
         plan: &super::plan::RetrievalPlan,
         context: &OperationContext,
     ) -> Result<Vec<QueryMatchCandidate>, Self::Error>;
+
+    /// Delegates a requested reasoning profile to the Phase 8 reasoning adapter.
+    ///
+    /// The default implementation keeps adapters that do not yet provide Phase 8
+    /// reasoning explicit: the query executor never implements inference itself.
+    fn reason(
+        &self,
+        plan: &QueryPlan,
+        _base_candidates: &[QueryMatchCandidate],
+        _context: &OperationContext,
+    ) -> Result<Vec<QueryMatchCandidate>, QueryExecutionError<Self::Error>> {
+        Err(QueryExecutionError::ReasoningUnavailable {
+            profile: plan.reasoning(),
+        })
+    }
 }
 
 /// Executes a plan using the default deterministic KG ranking policy.
@@ -77,13 +92,11 @@ where
 {
     plan.validate().map_err(QueryExecutionError::InvalidPlan)?;
 
+    let mut candidates = collect_candidates(access, plan.operator(), context)?;
     if plan.reasoning() != ReasoningProfile::None {
-        return Err(QueryExecutionError::ReasoningUnavailable {
-            profile: plan.reasoning(),
-        });
+        let derived = access.reason(plan, &candidates, context)?;
+        candidates.extend(derived);
     }
-
-    let candidates = collect_candidates(access, plan.operator(), context)?;
     let filtered = candidates
         .into_iter()
         .filter(|candidate| visible(candidate, plan.visibility()))
@@ -157,7 +170,7 @@ where
     let explanation = QueryExplanation::new(
         format!("executed {} query", plan.kind()),
         matches!(plan.operator(), QueryOperator::Retrieve(retrieval) if retrieval.expansion() == super::request::SemanticExpansion::Controlled),
-        false,
+        plan.reasoning() != ReasoningProfile::None,
         plan.index_requirement() != IndexAccessRequirement::Optional,
         plan.ranking().name(),
     )
@@ -416,6 +429,25 @@ mod tests {
         ) -> Result<Vec<QueryMatchCandidate>, Self::Error> {
             Ok(self.candidates.clone())
         }
+
+        fn reason(
+            &self,
+            plan: &crate::query::QueryPlan,
+            _base_candidates: &[QueryMatchCandidate],
+            _context: &OperationContext,
+        ) -> Result<Vec<QueryMatchCandidate>, QueryExecutionError<Self::Error>> {
+            assert_eq!(plan.reasoning(), crate::query::ReasoningProfile::Basic);
+            Ok(vec![
+                QueryMatchCandidate::new(
+                    QueryReference::Assertion(
+                        KnowledgeAssertionId::new("assertion-reasoning").unwrap(),
+                    ),
+                    QueryMatchType::Semantic,
+                )
+                .with_publication(PublicationOutcome::Published)
+                .with_inference_status(InferenceStatus::Inferred),
+            ])
+        }
     }
 
     fn context() -> OperationContext {
@@ -428,9 +460,9 @@ mod tests {
     #[test]
     fn executor_returns_reference_oriented_explainable_results() {
         let request = QueryRequest::Retrieval(RetrievalRequest::lexical("sabr"));
-        let plan = plan(&request).expect("retrieval should plan");
-        let result =
-            execute(&FakeAccess::default(), &plan, &context()).expect("execution should succeed");
+        let query_plan = plan(&request).expect("retrieval should plan");
+        let result = execute(&FakeAccess::default(), &query_plan, &context())
+            .expect("execution should succeed");
 
         assert_eq!(result.items().len(), 2);
         assert_eq!(
@@ -442,21 +474,23 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_is_explicitly_deferred_to_phase8() {
-        let options =
-            crate::query::QueryOptions::new().with_reasoning(crate::query::ReasoningProfile::Basic);
+    fn reasoning_is_delegated_to_the_phase8_access_boundary() {
+        let options = crate::query::QueryOptions::new()
+            .with_reasoning(crate::query::ReasoningProfile::Basic)
+            .with_visibility(crate::query::VisibilityProfile::research());
         let request =
             QueryRequest::Retrieval(RetrievalRequest::lexical("sabr").with_options(options));
-        let plan = plan(&request).expect("planning should preserve reasoning intent");
-        let error = execute(&FakeAccess::default(), &plan, &context())
-            .expect_err("phase 6 must not silently execute phase 8 reasoning");
+        let query_plan = plan(&request).expect("planning should preserve reasoning intent");
+        let result = execute(&FakeAccess::default(), &query_plan, &context())
+            .expect("reasoning should be delegated to the access adapter");
 
-        assert!(matches!(
-            error,
-            QueryExecutionError::ReasoningUnavailable {
-                profile: crate::query::ReasoningProfile::Basic
-            }
-        ));
+        assert!(
+            result
+                .items()
+                .iter()
+                .any(|item| { item.inference_status() == InferenceStatus::Inferred })
+        );
+        assert!(result.explanation().reasoning_requested());
     }
 
     #[test]
@@ -513,8 +547,8 @@ mod tests {
             RetrievalRequest::semantic(crate::query::RetrievalTarget::Text("paths".to_owned()))
                 .with_options(options),
         );
-        let first_plan = plan(&request).expect("first page should plan");
-        let first = execute(&access, &first_plan, &context()).expect("first page should execute");
+        let query_plan = plan(&request).expect("first page should plan");
+        let first = execute(&access, &query_plan, &context()).expect("first page should execute");
         let cursor = first
             .next_cursor()
             .expect("first page should expose a cursor")

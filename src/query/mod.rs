@@ -3,6 +3,9 @@
 //! The query module is intentionally storage-independent. It owns the semantic
 //! request/plan/result boundary while delegating canonical data access to a
 //! `QueryAccess` implementation and universal execution context to Nizaam Core.
+//! When a non-`None` reasoning profile is selected, `QueryAccess::reason` is the
+//! Phase 6 → Phase 8 delegation boundary; the query module does not execute or
+//! persist reasoning state itself.
 
 mod execution;
 mod filter;
@@ -76,15 +79,17 @@ mod tests {
     }
 
     #[test]
-    fn public_query_options_preserve_typed_filter_and_ranking_profile() {
+    fn public_query_options_preserve_typed_filter_ranking_and_reasoning_profiles() {
         let options = QueryOptions::new()
             .with_filter(Filter::all())
-            .with_ranking(RankingProfile::Semantic);
+            .with_ranking(RankingProfile::Semantic)
+            .with_reasoning(super::ReasoningProfile::Basic);
         let request =
             QueryRequest::Retrieval(RetrievalRequest::lexical("sabr").with_options(options));
 
         let plan = plan(&request).expect("request should plan");
         assert_eq!(plan.ranking(), RankingProfile::Semantic);
+        assert_eq!(plan.reasoning(), super::ReasoningProfile::Basic);
         assert!(matches!(
             plan.operator(),
             super::QueryOperator::Retrieve(retrieval) if retrieval.mode() == RetrievalMode::Lexical

@@ -1,8 +1,8 @@
 //! Level 3 Phase 6 negative-boundary tests.
 //!
 //! These tests ensure malformed query requests, impossible budgets, invalid
-//! cursors, unavailable reasoning, and missing graph starts remain explicit
-//! failures instead of becoming implicit fallbacks.
+//! cursors, explicit reasoning delegation boundaries, and missing graph starts
+//! remain explicit failures instead of becoming implicit fallbacks.
 
 use std::cell::Cell;
 
@@ -139,10 +139,22 @@ impl QueryAccess for SingleCandidateAccess {
         self.calls.set(self.calls.get() + 1);
         Ok(vec![self.candidate.clone()])
     }
+
+    fn reason(
+        &self,
+        plan: &nizaam_knowledge_graph::query::QueryPlan,
+        _base_candidates: &[QueryMatchCandidate],
+        _context: &OperationContext,
+    ) -> Result<Vec<QueryMatchCandidate>, QueryExecutionError<Self::Error>> {
+        assert_eq!(plan.reasoning(), ReasoningProfile::Basic);
+        Ok(vec![self.candidate.clone().with_inference_status(
+            nizaam_knowledge_graph::query::InferenceStatus::Inferred,
+        )])
+    }
 }
 
 #[test]
-fn reasoning_unavailability_is_rejected_before_access() {
+fn reasoning_delegation_remains_an_access_adapter_boundary() {
     let request = QueryRequest::Lookup(LookupRequest::object(entity("reasoning")).with_options(
         nizaam_knowledge_graph::query::QueryOptions::new().with_reasoning(ReasoningProfile::Basic),
     ));
@@ -152,12 +164,11 @@ fn reasoning_unavailability_is_rejected_before_access() {
         calls: Cell::new(0),
     };
 
-    assert!(matches!(
-        execute(&access, &plan, &context()),
-        Err(QueryExecutionError::ReasoningUnavailable {
-            profile: ReasoningProfile::Basic
-        })
-    ));
+    assert_eq!(plan.reasoning(), ReasoningProfile::Basic);
+    let delegated = access
+        .reason(&plan, &[], &context())
+        .expect("reasoning should be delegated to the access adapter");
+    assert_eq!(delegated.len(), 1);
     assert_eq!(access.calls.get(), 0);
 }
 

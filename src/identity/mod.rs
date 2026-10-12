@@ -1,9 +1,10 @@
-//! Knowledge-graph identity foundations for Phase 1 and Phase 4.
+//! Knowledge-graph identity foundations for Phase 1, Phase 4, and Phase 8.
 //!
 //! This module exposes the strongly typed identities used by Phase 1 semantic
-//! objects and the Phase 4 evidence, provenance, verification, and contradiction
-//! records. Identity generation, validation, serialization, and comparison
-//! behavior remain owned by Nizaam Core's `identity!` mechanism.
+//! objects, Phase 4 evidence, provenance, verification, and contradiction
+//! records, and Phase 8 reasoning rules. Identity generation, validation,
+//! serialization, and comparison behavior remain owned by Nizaam Core's
+//! `identity!` mechanism.
 //!
 //! The semantic objects represented by these identities are intentionally kept
 //! outside this module. This module establishes identity boundaries only.
@@ -18,6 +19,7 @@ mod evidence;
 mod lexical;
 mod mention;
 mod reference;
+mod rule;
 mod source;
 mod verification;
 
@@ -31,6 +33,7 @@ pub use evidence::EvidenceId;
 pub use lexical::LexicalFormId;
 pub use mention::MentionId;
 pub use reference::ReferenceId;
+pub use rule::RuleId;
 pub use source::SourceId;
 pub use verification::VerificationId;
 
@@ -38,12 +41,13 @@ pub use verification::VerificationId;
 mod tests {
     use super::{
         ActivityId, AgentId, ConceptId, ContradictionId, EntityId, EvidenceId,
-        KnowledgeAssertionId, LexicalFormId, MentionId, ReferenceId, SourceId, VerificationId,
+        KnowledgeAssertionId, LexicalFormId, MentionId, ReferenceId, RuleId, SourceId,
+        VerificationId,
     };
     use std::any::TypeId;
 
     #[test]
-    fn phase1_and_phase4_identity_types_are_all_exposed() {
+    fn phase1_phase4_and_phase8_identity_types_are_all_exposed() {
         let entity = EntityId::generate();
         let concept = ConceptId::generate();
         let source = SourceId::generate();
@@ -56,6 +60,7 @@ mod tests {
         let agent = AgentId::generate();
         let verification = VerificationId::generate();
         let contradiction = ContradictionId::generate();
+        let rule = RuleId::generate();
 
         for value in [
             entity.as_str(),
@@ -70,13 +75,14 @@ mod tests {
             agent.as_str(),
             verification.as_str(),
             contradiction.as_str(),
+            rule.as_str(),
         ] {
             assert!(!value.is_empty());
         }
     }
 
     #[test]
-    fn phase1_and_phase4_identity_types_remain_strongly_distinct() {
+    fn phase1_phase4_and_phase8_identity_types_remain_strongly_distinct() {
         let identity_types = [
             TypeId::of::<EntityId>(),
             TypeId::of::<ConceptId>(),
@@ -90,6 +96,7 @@ mod tests {
             TypeId::of::<AgentId>(),
             TypeId::of::<VerificationId>(),
             TypeId::of::<ContradictionId>(),
+            TypeId::of::<RuleId>(),
         ];
 
         for (index, current) in identity_types.iter().enumerate() {
@@ -115,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn phase1_and_phase4_identity_generation_is_unique_within_each_identity_type() {
+    fn phase1_phase4_and_phase8_identity_generation_is_unique_within_each_identity_type() {
         assert_ne!(EntityId::generate(), EntityId::generate());
         assert_ne!(ConceptId::generate(), ConceptId::generate());
         assert_ne!(SourceId::generate(), SourceId::generate());
@@ -131,5 +138,6 @@ mod tests {
         assert_ne!(AgentId::generate(), AgentId::generate());
         assert_ne!(VerificationId::generate(), VerificationId::generate());
         assert_ne!(ContradictionId::generate(), ContradictionId::generate());
+        assert_ne!(RuleId::generate(), RuleId::generate());
     }
 }

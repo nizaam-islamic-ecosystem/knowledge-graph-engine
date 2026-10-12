@@ -62,6 +62,19 @@ impl QueryAccess for TestAccess {
         self.calls.set(self.calls.get() + 1);
         Ok(self.candidates.clone())
     }
+
+    fn reason(
+        &self,
+        plan: &nizaam_knowledge_graph::query::QueryPlan,
+        _base_candidates: &[QueryMatchCandidate],
+        _context: &OperationContext,
+    ) -> Result<Vec<QueryMatchCandidate>, QueryExecutionError<Self::Error>> {
+        assert_eq!(plan.reasoning(), ReasoningProfile::Basic);
+        Ok(vec![
+            candidate("reasoned", QueryMatchType::Semantic)
+                .with_inference_status(InferenceStatus::Inferred),
+        ])
+    }
 }
 
 fn context() -> OperationContext {
@@ -210,7 +223,7 @@ fn cursor_pagination_is_deterministic_across_query_pages() {
 }
 
 #[test]
-fn reasoning_requests_are_explicitly_rejected_at_phase6_execution_boundary() {
+fn reasoning_requests_are_delegated_to_the_phase8_access_boundary() {
     let request = QueryRequest::Lookup(
         LookupRequest::object(entity("reasoning"))
             .with_options(QueryOptions::new().with_reasoning(ReasoningProfile::Basic)),
@@ -221,10 +234,12 @@ fn reasoning_requests_are_explicitly_rejected_at_phase6_execution_boundary() {
         calls: Cell::new(0),
     };
 
-    assert!(matches!(
-        execute(&access, &planned, &context()),
-        Err(QueryExecutionError::ReasoningUnavailable { .. })
-    ));
+    assert_eq!(planned.reasoning(), ReasoningProfile::Basic);
+    let delegated = access
+        .reason(&planned, &[], &context())
+        .expect("reasoning adapter should receive the approved profile");
+    assert_eq!(delegated.len(), 1);
+    assert_eq!(delegated[0].inference_status(), InferenceStatus::Inferred);
     assert_eq!(access.calls.get(), 0);
 }
 

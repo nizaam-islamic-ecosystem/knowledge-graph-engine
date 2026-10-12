@@ -5,7 +5,8 @@
 //! profiles, traverse storage, or orchestrate a reasoning run.
 
 use core::fmt;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use crate::assertion::{AssertionObject, AssertionPolarity, AssertionStatus, KnowledgeAssertion};
 
@@ -129,6 +130,15 @@ pub fn match_premise(
     assertion: &KnowledgeAssertion,
     bindings: &VariableBindings,
 ) -> Option<VariableBindings> {
+    if assertion.polarity() != AssertionPolarity::Positive
+        || !matches!(
+            assertion.status(),
+            AssertionStatus::Accepted | AssertionStatus::Known
+        )
+    {
+        return None;
+    }
+
     let mut next = bindings.clone();
     if !match_term(
         pattern.subject(),
@@ -161,40 +171,199 @@ pub fn match_premises(
 ) -> Vec<(Vec<KnowledgeAssertion>, VariableBindings)> {
     let mut matches = Vec::new();
     let mut selected = Vec::with_capacity(rule.premises().len());
+    let predicate_index = build_predicate_index(assertions);
     match_recursive(
         rule,
         assertions,
+        &predicate_index,
         0,
         VariableBindings::new(),
         &mut selected,
         &mut matches,
+        None,
     );
     matches
 }
 
+#[derive(Clone, Copy, Debug)]
+struct InferenceBudget {
+    deadline: Instant,
+    remaining_applications: usize,
+}
+
+impl InferenceBudget {
+    fn exhausted(self) -> bool {
+        Instant::now() >= self.deadline || self.remaining_applications == 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MatchOutcome {
+    exhausted: bool,
+}
+
+fn build_predicate_index(assertions: &[KnowledgeAssertion]) -> BTreeMap<String, Vec<usize>> {
+    let mut index = BTreeMap::new();
+    for (position, assertion) in assertions.iter().enumerate() {
+        if assertion.polarity() == AssertionPolarity::Positive
+            && matches!(
+                assertion.status(),
+                AssertionStatus::Accepted | AssertionStatus::Known
+            )
+        {
+            index
+                .entry(assertion.predicate().name().to_owned())
+                .or_insert_with(Vec::new)
+                .push(position);
+        }
+    }
+    index
+}
+
+#[allow(clippy::too_many_arguments)]
 fn match_recursive(
     rule: &Rule,
     assertions: &[KnowledgeAssertion],
+    predicate_index: &BTreeMap<String, Vec<usize>>,
     premise_index: usize,
     bindings: VariableBindings,
     selected: &mut Vec<KnowledgeAssertion>,
     matches: &mut Vec<(Vec<KnowledgeAssertion>, VariableBindings)>,
-) {
+    budget: Option<&mut InferenceBudget>,
+) -> MatchOutcome {
+    if let Some(budget) = budget.as_ref()
+        && budget.exhausted()
+    {
+        return MatchOutcome { exhausted: true };
+    }
+
     if premise_index == rule.premises().len() {
-        if conditions_match(rule, &bindings) {
+        if conditions_match(rule, selected, &bindings) {
+            if let Some(budget) = budget {
+                if budget.exhausted() {
+                    return MatchOutcome { exhausted: true };
+                }
+                budget.remaining_applications = budget.remaining_applications.saturating_sub(1);
+            }
             matches.push((selected.clone(), bindings));
         }
-        return;
+        return MatchOutcome { exhausted: false };
     }
 
     let pattern = &rule.premises()[premise_index];
-    for assertion in assertions {
+    let positions = match pattern.predicate() {
+        RuleTerm::Text(predicate) => predicate_index.get(predicate).cloned().unwrap_or_default(),
+        RuleTerm::Object(_) => Vec::new(),
+        RuleTerm::Variable(_) => (0..assertions.len()).collect(),
+    };
+
+    match_recursive_positions(
+        rule,
+        assertions,
+        predicate_index,
+        premise_index,
+        bindings,
+        selected,
+        matches,
+        positions,
+        budget,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn match_recursive_positions(
+    rule: &Rule,
+    assertions: &[KnowledgeAssertion],
+    predicate_index: &BTreeMap<String, Vec<usize>>,
+    premise_index: usize,
+    bindings: VariableBindings,
+    selected: &mut Vec<KnowledgeAssertion>,
+    matches: &mut Vec<(Vec<KnowledgeAssertion>, VariableBindings)>,
+    positions: Vec<usize>,
+    mut budget: Option<&mut InferenceBudget>,
+) -> MatchOutcome {
+    let pattern = &rule.premises()[premise_index];
+    for position in positions {
+        if let Some(ref mut budget) = budget
+            && budget.exhausted()
+        {
+            return MatchOutcome { exhausted: true };
+        }
+
+        let assertion = &assertions[position];
         if let Some(next) = match_premise(pattern, assertion, &bindings) {
             selected.push(assertion.clone());
-            match_recursive(rule, assertions, premise_index + 1, next, selected, matches);
+            let outcome = match_recursive(
+                rule,
+                assertions,
+                predicate_index,
+                premise_index + 1,
+                next,
+                selected,
+                matches,
+                budget.as_deref_mut(),
+            );
             selected.pop();
+            if outcome.exhausted {
+                return outcome;
+            }
         }
     }
+    MatchOutcome { exhausted: false }
+}
+
+fn match_premises_bounded(
+    rule: &Rule,
+    assertions: &[KnowledgeAssertion],
+    budget: &mut InferenceBudget,
+) -> (Vec<(Vec<KnowledgeAssertion>, VariableBindings)>, bool) {
+    let mut matches = Vec::new();
+    let mut selected = Vec::with_capacity(rule.premises().len());
+    let predicate_index = build_predicate_index(assertions);
+    let outcome = match_recursive(
+        rule,
+        assertions,
+        &predicate_index,
+        0,
+        VariableBindings::new(),
+        &mut selected,
+        &mut matches,
+        Some(budget),
+    );
+    (matches, outcome.exhausted)
+}
+
+fn apply_rule_with_budget(
+    rule: &Rule,
+    assertions: &[KnowledgeAssertion],
+    depth: usize,
+    budget: &mut InferenceBudget,
+) -> Result<(Vec<RuleApplication>, bool), InferenceError> {
+    rule.validate()
+        .map_err(|error| InferenceError::InvalidRule(error.to_string()))?;
+
+    let (matches, exhausted) = match_premises_bounded(rule, assertions, budget);
+    let mut applications = Vec::new();
+    for (premises, bindings) in matches {
+        let conclusion = ground_conclusion(rule.conclusion(), &bindings, &premises)?;
+        if !rule.scope().allows_predicate(conclusion.predicate().name())
+            || !conclusion_object_allowed(rule, &conclusion)
+            || !bindings_object_kinds_allowed(rule, &bindings)
+            || !bindings_match_declared_types(rule, &bindings)
+        {
+            continue;
+        }
+        applications.push(RuleApplication::new(
+            rule.id().clone(),
+            rule.version(),
+            premises,
+            conclusion,
+            bindings,
+            depth,
+        ));
+    }
+    deduplicate_applications(&mut applications);
+    Ok((applications, exhausted))
 }
 
 /// Grounds all successful premise matches into rule applications.
@@ -209,7 +378,14 @@ pub fn apply_rule(
     let mut applications = Vec::new();
     let matches = match_premises(rule, assertions);
     for (premises, bindings) in matches {
-        let conclusion = ground_conclusion(rule.conclusion(), &bindings, premises.first())?;
+        let conclusion = ground_conclusion(rule.conclusion(), &bindings, &premises)?;
+        if !rule.scope().allows_predicate(conclusion.predicate().name())
+            || !conclusion_object_allowed(rule, &conclusion)
+            || !bindings_object_kinds_allowed(rule, &bindings)
+            || !bindings_match_declared_types(rule, &bindings)
+        {
+            continue;
+        }
         applications.push(RuleApplication::new(
             rule.id().clone(),
             rule.version(),
@@ -240,7 +416,64 @@ pub fn apply_rules(
     Ok(applications)
 }
 
-/// Deduplicates applications by semantic conclusion and rule identity.
+/// Executes rules while enforcing the caller's inference work budget.
+pub(crate) fn apply_rules_with_budget(
+    rules: &[&Rule],
+    assertions: &[KnowledgeAssertion],
+    depth: usize,
+    deadline: Instant,
+    remaining_applications: usize,
+) -> Result<(Vec<RuleApplication>, usize, bool), InferenceError> {
+    let mut ordered = rules.to_vec();
+    ordered.sort_by_key(|left| left.structural_key());
+
+    let mut budget = InferenceBudget {
+        deadline,
+        remaining_applications,
+    };
+    let mut applications = Vec::new();
+    let mut exhausted = false;
+    for rule in ordered {
+        if budget.exhausted() {
+            exhausted = true;
+            break;
+        }
+        let (mut rule_applications, rule_exhausted) =
+            apply_rule_with_budget(rule, assertions, depth, &mut budget)?;
+        applications.append(&mut rule_applications);
+        if rule_exhausted {
+            exhausted = true;
+            break;
+        }
+    }
+    deduplicate_applications(&mut applications);
+    Ok((applications, budget.remaining_applications, exhausted))
+}
+
+fn conclusion_object_allowed(rule: &Rule, conclusion: &KnowledgeAssertion) -> bool {
+    object_kind(&RuleTerm::Object(conclusion.object().clone()))
+        .is_none_or(|kind| rule.scope().allows_object_kind(kind))
+}
+
+fn bindings_object_kinds_allowed(rule: &Rule, bindings: &VariableBindings) -> bool {
+    bindings
+        .values()
+        .values()
+        .all(|value| object_kind(value).is_none_or(|kind| rule.scope().allows_object_kind(kind)))
+}
+
+fn bindings_match_declared_types(rule: &Rule, bindings: &VariableBindings) -> bool {
+    rule.bindings().iter().all(|binding| {
+        binding.required_type().is_none_or(|required| {
+            bindings
+                .get(binding.variable())
+                .and_then(object_kind)
+                .is_some_and(|actual| actual == required)
+        })
+    })
+}
+
+/// Deduplicates applications by conclusion, rule identity, and premise path.
 pub fn deduplicate_applications(applications: &mut Vec<RuleApplication>) {
     let mut seen = BTreeSet::new();
     applications.retain(|application| {
@@ -248,6 +481,11 @@ pub fn deduplicate_applications(applications: &mut Vec<RuleApplication>) {
             application.conclusion().id().clone(),
             application.rule_id().clone(),
             application.rule_version(),
+            application
+                .premises()
+                .iter()
+                .map(|premise| premise.id().clone())
+                .collect::<Vec<_>>(),
         ))
     });
 }
@@ -260,13 +498,21 @@ fn match_term(pattern: &RuleTerm, value: &RuleTerm, bindings: &mut VariableBindi
     }
 }
 
-fn conditions_match(rule: &Rule, bindings: &VariableBindings) -> bool {
+fn conditions_match(
+    rule: &Rule,
+    selected: &[KnowledgeAssertion],
+    bindings: &VariableBindings,
+) -> bool {
     rule.conditions()
         .iter()
-        .all(|condition| evaluate_condition(condition, bindings))
+        .all(|condition| evaluate_condition(condition, selected, bindings))
 }
 
-fn evaluate_condition(condition: &RuleCondition, bindings: &VariableBindings) -> bool {
+fn evaluate_condition(
+    condition: &RuleCondition,
+    selected: &[KnowledgeAssertion],
+    bindings: &VariableBindings,
+) -> bool {
     match condition {
         RuleCondition::Equal(left, right) => {
             resolve_term(left, bindings) == resolve_term(right, bindings)
@@ -274,10 +520,9 @@ fn evaluate_condition(condition: &RuleCondition, bindings: &VariableBindings) ->
         RuleCondition::NotEqual(left, right) => {
             resolve_term(left, bindings) != resolve_term(right, bindings)
         }
-        RuleCondition::PredicateIs(expected) => bindings
-            .values()
-            .values()
-            .any(|value| matches!(value, RuleTerm::Text(actual) if actual == expected)),
+        RuleCondition::PredicateIs(expected) => selected
+            .iter()
+            .any(|assertion| assertion.predicate().name() == expected),
         RuleCondition::ObjectKind { variable, kind } => bindings
             .get(variable)
             .and_then(object_kind)
@@ -307,7 +552,7 @@ fn object_kind(value: &RuleTerm) -> Option<&'static str> {
 fn ground_conclusion(
     pattern: &RulePattern,
     bindings: &VariableBindings,
-    template: Option<&KnowledgeAssertion>,
+    premises: &[KnowledgeAssertion],
 ) -> Result<KnowledgeAssertion, InferenceError> {
     let subject = ground_object(pattern.subject(), bindings)?;
     let predicate = ground_text(pattern.predicate(), bindings)?;
@@ -315,27 +560,45 @@ fn ground_conclusion(
     let predicate = crate::assertion::AssertionPredicate::new(predicate)
         .map_err(|error| InferenceError::InvalidConclusion(error.to_string()))?;
 
-    let (context, qualifiers, status, polarity) = template
-        .map(|assertion| {
-            (
-                assertion.context().clone(),
-                assertion.qualifiers().clone(),
-                AssertionStatus::Provisional,
-                assertion.polarity(),
-            )
-        })
-        .unwrap_or_else(|| {
-            (
-                crate::assertion::AssertionContext::new(),
-                crate::assertion::Qualifiers::new(),
-                AssertionStatus::Provisional,
-                AssertionPolarity::Positive,
-            )
-        });
+    let (context, qualifiers, polarity) = if premises.is_empty() {
+        (
+            crate::assertion::AssertionContext::new(),
+            crate::assertion::Qualifiers::new(),
+            AssertionPolarity::Positive,
+        )
+    } else {
+        (
+            combine_premise_contexts(premises),
+            combine_premise_qualifiers(premises),
+            premises[0].polarity(),
+        )
+    };
+    let status = AssertionStatus::Provisional;
 
     Ok(KnowledgeAssertion::new(
         subject, predicate, object, context, qualifiers, status, polarity,
     ))
+}
+
+fn combine_premise_contexts(premises: &[KnowledgeAssertion]) -> crate::assertion::AssertionContext {
+    let mut context = crate::assertion::AssertionContext::new();
+    for (index, premise) in premises.iter().enumerate() {
+        for (key, value) in premise.context().iter() {
+            if context.get(key).is_none() || context.get(key) == Some(value) {
+                let _ = context.insert(key, value);
+            } else {
+                let _ = context.insert(format!("premise.{index}.{key}"), value);
+            }
+        }
+    }
+    context
+}
+
+fn combine_premise_qualifiers(premises: &[KnowledgeAssertion]) -> crate::assertion::Qualifiers {
+    premises
+        .iter()
+        .flat_map(|premise| premise.qualifiers().iter().cloned())
+        .collect()
 }
 
 fn ground_object(

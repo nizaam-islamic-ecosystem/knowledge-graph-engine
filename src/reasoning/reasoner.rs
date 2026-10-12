@@ -6,15 +6,15 @@
 //! storage engine, governance engine, or control plane.
 
 use core::fmt;
-use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use crate::assertion::KnowledgeAssertion;
 use crate::query::ReasoningProfile;
 use crate::storage::Snapshot;
 
 use super::derived::DerivedKnowledgeSet;
-use super::inference::{InferenceError, apply_rules};
+use super::inference::{InferenceError, apply_rules_with_budget};
 use super::profile::{ProfileValidationError, ReasoningProfileConfig};
 use super::registry::{RegistryError, RuleRegistry};
 use super::rule::{Rule, RulePattern, RuleTerm};
@@ -209,21 +209,29 @@ impl Reasoner {
         }
 
         let mut working = select_relevant_assertions(input.assertions(), input.goal());
-        if working.len() > config.budgets().max_expansion() {
+        let initially_truncated = working.len() > config.budgets().max_expansion();
+        if initially_truncated {
             working.truncate(config.budgets().max_expansion());
         }
 
         let mut derived = DerivedKnowledgeSet::new();
+        let mut seen_applications = BTreeSet::new();
         let mut rule_applications = 0usize;
         let mut max_depth_reached = 0usize;
         let mut expanded_assertions = working.len();
         let start = Instant::now();
-        let mut status = ReasoningExecutionStatus::Complete;
-        let mut message = None;
+        let deadline = start + config.budgets().execution_limit();
+        let mut status = if initially_truncated {
+            ReasoningExecutionStatus::Incomplete
+        } else {
+            ReasoningExecutionStatus::Complete
+        };
+        let mut message = initially_truncated
+            .then(|| "reasoning expansion input truncated to the configured maximum".to_owned());
 
         for depth in 0..=config.budgets().max_depth() {
             max_depth_reached = depth;
-            if elapsed_exceeds(start, config.budgets().execution_limit()) {
+            if Instant::now() >= deadline {
                 status = ReasoningExecutionStatus::Incomplete;
                 message = Some("reasoning execution time budget exceeded".to_owned());
                 break;
@@ -253,32 +261,77 @@ impl Reasoner {
                 break;
             }
 
-            let applications =
-                apply_rules(&rules, &working, depth).map_err(ReasonerError::Inference)?;
+            let remaining_applications = config
+                .budgets()
+                .max_rule_applications()
+                .saturating_sub(rule_applications);
+            if remaining_applications == 0 {
+                status = ReasoningExecutionStatus::Incomplete;
+                message = Some("reasoning rule-application budget exceeded".to_owned());
+                break;
+            }
+
+            let (applications, _remaining, matching_exhausted) =
+                apply_rules_with_budget(&rules, &working, depth, deadline, remaining_applications)
+                    .map_err(ReasonerError::Inference)?;
+
             if applications.is_empty() {
+                if matching_exhausted {
+                    status = ReasoningExecutionStatus::Incomplete;
+                    message = Some(
+                        "reasoning execution budget exhausted during premise matching".to_owned(),
+                    );
+                }
                 break;
             }
 
             let mut new_assertions = BTreeMap::new();
+            let mut stop = matching_exhausted;
             for application in applications {
+                let premise_ids = application
+                    .premises()
+                    .iter()
+                    .map(|premise| premise.id().clone())
+                    .collect::<Vec<_>>();
+                let application_key = (
+                    application.conclusion().id().clone(),
+                    application.rule_id().clone(),
+                    application.rule_version(),
+                    premise_ids,
+                );
+
+                if !seen_applications.insert(application_key) {
+                    continue;
+                }
+
                 rule_applications = rule_applications.saturating_add(1);
                 if rule_applications > config.budgets().max_rule_applications() {
                     status = ReasoningExecutionStatus::Incomplete;
                     message = Some("reasoning rule-application budget exceeded".to_owned());
-                    break;
-                }
-
-                if derived.len() >= config.budgets().max_derived_assertions()
-                    && derived.get(application.conclusion().id()).is_none()
-                {
-                    status = ReasoningExecutionStatus::Incomplete;
-                    message = Some("reasoning derived-assertion budget exceeded".to_owned());
+                    stop = true;
                     break;
                 }
 
                 let is_new = !working
                     .iter()
                     .any(|assertion| assertion.id() == application.conclusion().id());
+
+                if is_new && derived.len() >= config.budgets().max_derived_assertions() {
+                    status = ReasoningExecutionStatus::Incomplete;
+                    message = Some("reasoning derived-assertion budget exceeded".to_owned());
+                    stop = true;
+                    break;
+                }
+
+                if is_new && derived.len() >= config.budgets().result_limit() {
+                    status = ReasoningExecutionStatus::Incomplete;
+                    message = Some(
+                        "reasoning result limit exceeded; derived output truncated".to_owned(),
+                    );
+                    stop = true;
+                    break;
+                }
+
                 derived.insert_application(&application, input.snapshot(), profile);
                 if is_new {
                     new_assertions.insert(
@@ -288,7 +341,13 @@ impl Reasoner {
                 }
             }
 
-            if message.is_some() {
+            if matching_exhausted && message.is_none() {
+                status = ReasoningExecutionStatus::Incomplete;
+                message =
+                    Some("reasoning execution budget exhausted during premise matching".to_owned());
+            }
+
+            if stop {
                 break;
             }
 
@@ -308,13 +367,12 @@ impl Reasoner {
                 working.push(assertion);
             }
             expanded_assertions = working.len();
-        }
 
-        if status == ReasoningExecutionStatus::Complete
-            && max_depth_reached >= config.budgets().max_depth()
-        {
-            status = ReasoningExecutionStatus::Incomplete;
-            message = Some("reasoning depth budget exhausted".to_owned());
+            if depth == config.budgets().max_depth() {
+                status = ReasoningExecutionStatus::Incomplete;
+                message = Some("reasoning depth budget exhausted".to_owned());
+                break;
+            }
         }
 
         let conflicts = detect_conflicts(input.assertions(), derived.values());
@@ -402,6 +460,8 @@ where
             format!("{:?}", assertion.subject()),
             assertion.predicate().as_str().to_owned(),
             format!("{:?}", assertion.object()),
+            format!("{:?}", assertion.context()),
+            format!("{:?}", assertion.qualifiers()),
         );
         match assertion.polarity() {
             crate::assertion::AssertionPolarity::Positive => {
@@ -422,10 +482,6 @@ where
                 .map(|negative| ReasoningConflict::new(positive, negative))
         })
         .collect()
-}
-
-fn elapsed_exceeds(start: Instant, limit: Duration) -> bool {
-    start.elapsed() > limit
 }
 
 /// Reasoner-level failures.

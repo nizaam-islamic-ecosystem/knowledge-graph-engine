@@ -17199,14 +17199,14 @@ The complete verification suite should include, where applicable:
 
 ``` bash
 {
-cargo fmt --all
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo build --workspace
-cargo check --workspace
-cargo test --workspace --all-targets
-cargo test --workspace --doc
-} tee cargo-check.log
+  cargo fmt --all
+  cargo fmt --all --check &&
+  cargo clippy --workspace --all-targets -- -D warnings &&
+  cargo build --workspace &&
+  cargo check --workspace &&
+  cargo test --workspace --all-targets &&
+  cargo test --workspace --doc
+} | tee cargo-check.log
 ```
 
 Focused tests may be used during development, but they do not replace

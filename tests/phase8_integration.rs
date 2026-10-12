@@ -16,7 +16,8 @@ use nizaam_knowledge_graph::identity::{EntityId, RuleId};
 use nizaam_knowledge_graph::ingestion::PublicationOutcome;
 use nizaam_knowledge_graph::query::{
     InferenceStatus, LookupRequest, QueryAccess, QueryExecutionError, QueryMatchCandidate,
-    QueryMatchType, QueryOptions, QueryReference, QueryRequest, ReasoningProfile, execute, plan,
+    QueryMatchType, QueryOptions, QueryReference, QueryRequest, ReasoningProfile,
+    VisibilityProfile, execute, plan,
 };
 use nizaam_knowledge_graph::reasoning::{
     Reasoner, ReasoningExecutionStatus, ReasoningInput, Rule, RuleKind, RuleMetadata, RulePattern,
@@ -187,8 +188,11 @@ fn phase7_snapshot_is_pinned_as_the_reasoning_input_context() {
 #[test]
 fn phase6_reasoning_profile_is_carried_to_the_access_delegation_boundary() {
     let request = QueryRequest::Lookup(
-        LookupRequest::object(entity("query-goal"))
-            .with_options(QueryOptions::new().with_reasoning(ReasoningProfile::Basic)),
+        LookupRequest::object(entity("query-goal")).with_options(
+            QueryOptions::new()
+                .with_reasoning(ReasoningProfile::Basic)
+                .with_visibility(VisibilityProfile::research()),
+        ),
     );
     let planned = plan(&request).expect("request should plan");
     assert_eq!(planned.reasoning(), ReasoningProfile::Basic);
@@ -204,12 +208,14 @@ fn phase6_reasoning_profile_is_carried_to_the_access_delegation_boundary() {
         reason_calls: Cell::new(0),
     };
 
-    let derived = access
-        .reason(&planned, &[], &context())
-        .expect("adapter should accept the delegated profile");
+    let result = execute(&access, &planned, &context()).expect("query should execute");
     assert_eq!(access.reason_calls.get(), 1);
-    assert_eq!(derived.len(), 1);
-    assert_eq!(derived[0].inference_status(), InferenceStatus::Inferred);
+    assert!(
+        result
+            .items()
+            .iter()
+            .any(|item| item.inference_status() == InferenceStatus::Inferred)
+    );
 }
 
 #[test]

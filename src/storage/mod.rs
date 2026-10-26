@@ -13,6 +13,7 @@ pub mod transaction;
 
 pub use document_store::{
     Document, DocumentId, DocumentStore, DocumentStoreError, FileDocumentStore,
+    PRODUCTION_ARTIFACT_RETENTION, STORAGE_MODE_ENV, StorageMode,
 };
 pub use recovery::{
     FileRecoveryJournal, RecoveredState, RecoveryCommit, RecoveryError, RecoveryJournal,
@@ -266,6 +267,58 @@ mod tests {
         assert_eq!(recovered.records()[0].target(), &target);
         assert_eq!(recovered.records()[0].document().as_bytes(), b"recovered");
         assert_eq!(recovered.replayed_change_sets(), &[change_set]);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repository_storage_mode_switch_preserves_committed_records() {
+        let root = temp_root("mode-switch");
+        let target = entity_target("mode-switch-entity");
+
+        {
+            let mut repository = FileRepository::open_with_mode(&root, StorageMode::Development)
+                .expect("development repository should open");
+            let mut transaction = ChangeSetTransaction::begin(&mut repository)
+                .expect("development transaction should begin");
+            transaction
+                .stage(
+                    Change::new(ChangeKind::Created, target.clone()),
+                    Some(repository_record("mode-switch-entity", b"durable-record")),
+                )
+                .expect("record should stage");
+            transaction
+                .commit()
+                .expect("development commit should succeed");
+            assert!(root.join("kg/current-state.json").is_file());
+            assert!(
+                std::fs::read_dir(root.join("kg"))
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .any(|entry| entry.path().extension().is_some_and(|ext| ext == "tmp")),
+                "development mode should leave inspectable atomic-write artifacts"
+            );
+        }
+
+        // Opening the same on-disk repository in production must preserve the
+        // canonical state and record. Recent development artifacts remain for
+        // the documented retention interval rather than being deleted abruptly.
+        let reopened = FileRepository::open_with_mode(&root, StorageMode::Production)
+            .expect("production repository should reopen the same canonical state");
+        let stored = reopened
+            .read(&target)
+            .expect("record lookup should work")
+            .expect("canonical record must survive the mode switch");
+        assert_eq!(stored.document().as_bytes(), b"durable-record");
+        assert!(root.join("kg/current-state.json").is_file());
+        assert!(root.join(".lock").is_file());
+        assert!(
+            std::fs::read_dir(root.join("kg"))
+                .expect("KG storage directory should remain readable")
+                .filter_map(Result::ok)
+                .any(|entry| entry.path().extension().is_some_and(|ext| ext == "tmp")),
+            "production mode must retain recent development artifacts within the 24-hour grace period"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

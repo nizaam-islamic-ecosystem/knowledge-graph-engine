@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use super::document_store::{Document, DocumentStoreError, FileDocumentStore};
+use super::document_store::{Document, DocumentStoreError, FileDocumentStore, StorageMode};
 use super::repository::RepositoryRecord;
 use super::snapshot::Snapshot;
 use crate::versioning::{
@@ -245,22 +245,41 @@ pub trait RecoveryJournal {
 #[derive(Debug)]
 pub struct FileRecoveryJournal {
     path: PathBuf,
+    mode: StorageMode,
 }
 
 impl FileRecoveryJournal {
     /// Opens or creates the default Nizaam recovery journal.
     pub fn open_default() -> Result<Self, RecoveryError> {
-        let root = FileDocumentStore::default_root()?;
-        Self::open(root)
+        Self::open_default_with_mode(StorageMode::from_environment()?)
     }
 
-    /// Opens or creates the recovery journal below the supplied Nizaam root.
+    /// Opens or creates the default recovery journal with an explicit storage mode.
+    pub fn open_default_with_mode(mode: StorageMode) -> Result<Self, RecoveryError> {
+        let root = FileDocumentStore::default_root()?;
+        Self::open_with_mode(root, mode)
+    }
+
+    /// Opens or creates the recovery journal below the supplied Nizaam root,
+    /// resolving the mode from `NIZAAM_STORAGE_MODE` (development by default).
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, RecoveryError> {
+        Self::open_with_mode(root, StorageMode::from_environment()?)
+    }
+
+    /// Opens or creates the recovery journal with an explicit storage mode.
+    pub fn open_with_mode(
+        root: impl Into<PathBuf>,
+        mode: StorageMode,
+    ) -> Result<Self, RecoveryError> {
         let root = root.into();
-        let store = FileDocumentStore::new(root.clone()).map_err(RecoveryError::from)?;
+        let store =
+            FileDocumentStore::new_with_mode(root.clone(), mode).map_err(RecoveryError::from)?;
         let _lock = store
             .acquire_exclusive_lock()
             .map_err(RecoveryError::from)?;
+        // Production cleanup is restricted to old generated atomic-write
+        // artifacts. It must never remove this journal or other durable state.
+        let _ = store.cleanup_stale_artifacts();
         let directory = root.join(RECOVERY_DIRECTORY);
 
         fs::create_dir_all(&directory).map_err(|error: io::Error| {
@@ -273,6 +292,7 @@ impl FileRecoveryJournal {
 
         Ok(Self {
             path: root.join(JOURNAL_DOCUMENT),
+            mode,
         })
     }
 
@@ -286,7 +306,8 @@ impl FileRecoveryJournal {
         let root = self.path.parent().and_then(Path::parent).ok_or_else(|| {
             RecoveryError::Storage("recovery journal root could not be resolved".to_owned())
         })?;
-        let store = FileDocumentStore::new(root).map_err(RecoveryError::from)?;
+        let store =
+            FileDocumentStore::new_with_mode(root, self.mode).map_err(RecoveryError::from)?;
         let _lock = store
             .acquire_exclusive_lock()
             .map_err(RecoveryError::from)?;

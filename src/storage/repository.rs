@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use super::document_store::{Document, DocumentStore, DocumentStoreError, FileDocumentStore};
+use super::document_store::{
+    Document, DocumentStore, DocumentStoreError, FileDocumentStore, StorageMode,
+};
 use super::snapshot::Snapshot;
 use crate::versioning::{
     Change, ChangeKind, ChangeSet, ChangeSetId, ChangeTarget, KgVersion, KgVersionId,
@@ -272,12 +274,29 @@ impl FileRepository {
     /// Opens or initializes the default Nizaam repository under the current
     /// operating-system user home (`~/.nizaam`).
     pub fn open_default() -> Result<Self, RepositoryError> {
-        Self::open(FileDocumentStore::default_root()?)
+        Self::open_default_with_mode(StorageMode::from_environment()?)
+    }
+
+    /// Opens the default Nizaam repository using an explicit storage mode.
+    pub fn open_default_with_mode(mode: StorageMode) -> Result<Self, RepositoryError> {
+        Self::open_with_mode(FileDocumentStore::default_root()?, mode)
     }
 
     /// Opens an existing file-backed repository or initializes an empty one.
+    /// The mode is resolved from `NIZAAM_STORAGE_MODE`, defaulting to
+    /// development mode when the variable is not set.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, RepositoryError> {
-        let store = FileDocumentStore::new(root)?;
+        Self::open_with_mode(root, StorageMode::from_environment()?)
+    }
+
+    /// Opens a repository with an explicit storage lifecycle mode. The root is
+    /// the same directory layout used by the default `.nizaam` store; no
+    /// test-specific namespace or extra storage directory is introduced.
+    pub fn open_with_mode(
+        root: impl Into<PathBuf>,
+        mode: StorageMode,
+    ) -> Result<Self, RepositoryError> {
+        let store = FileDocumentStore::new_with_mode(root, mode)?;
         // Serialize initialization with commits and other first-time openers.
         // Always recheck the state file only after owning the same advisory lock
         // used by commit_change_set. A concurrent opener may observe the lock
@@ -292,6 +311,11 @@ impl FileRepository {
                 Err(error) => return Err(RepositoryError::Storage(error)),
             }
         };
+        // Production cleanup is maintenance-only: a cleanup failure must not
+        // prevent canonical state from being opened. The selector recognizes
+        // only old atomic-write artifacts and can never delete the state,
+        // journal, snapshots, indexes, or `.lock` file.
+        let _ = store.cleanup_stale_artifacts();
         let state_id = current_state_id()?;
 
         if let Some(document) = store.get(&state_id)? {
@@ -438,6 +462,10 @@ impl Repository for FileRepository {
         self.version = next_version.clone();
         self.records = next_records;
         self.history = next_history;
+        // Current staging files have already been handled by the atomic writer.
+        // This best-effort pass ages out artifacts retained by earlier
+        // development runs after the configured production retention interval.
+        let _ = self.store.cleanup_stale_artifacts();
         drop(lock);
 
         Ok(next_version)

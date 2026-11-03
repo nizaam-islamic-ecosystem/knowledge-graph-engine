@@ -13,7 +13,6 @@ homepage = "https://github.com/nizaam-islamic-ecosystem/knowledge-graph-engine"
 
 keywords = [
     "knowledge-graph",
-    "knowledge-representation",
     "semantic-web",
     "nizaam"
 ]

@@ -3,9 +3,29 @@ name = "nizaam-knowledge-graph"
 version = "0.1.0"
 edition = "2024"
 
+description = "A domain-independent knowledge graph engine for representing, validating, storing, querying, and reasoning over structured knowledge."
+
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/nizaam-islamic-ecosystem/knowledge-graph-engine"
+documentation = "https://docs.rs/nizaam-knowledge-graph"
+homepage = "https://github.com/nizaam-islamic-ecosystem/knowledge-graph-engine"
+
+keywords = [
+    "knowledge-graph",
+    "knowledge-representation",
+    "semantic-web",
+    "nizaam"
+]
+
+categories = [
+    "science",
+    "database"
+]
+
 [dependencies]
 dirs = "7.0.0"
 nizaam-core = "1.0.1"
 nizaam-indexing = "1.0.0"
-serde = "1.0.229"
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0"
